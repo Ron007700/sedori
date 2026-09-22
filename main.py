@@ -159,7 +159,7 @@ def fetch_auction_details(driver, url):
             if clean_img_url not in img_urls and not clean_img_url.endswith(".gif"):
                 img_urls.append(clean_img_url)
                 
-    img_urls = img_urls[:4]
+    img_urls = img_urls[:8]
     
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     images = []
