@@ -13,6 +13,8 @@ jobs:
     steps:
     - name: リポジトリのコードを取得
       uses: actions/checkout@v4
+      with:
+        ref: master
 
     - name: Python環境のセットアップ
       uses: actions/setup-python@v5
