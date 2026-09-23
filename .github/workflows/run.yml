@@ -2,41 +2,36 @@ name: Auto Watch Research
 
 on:
   schedule:
-    # 日本時間 (JST) 19:00, 20:30, 21:00 に自動実行
     - cron: '0 10 * * *'
     - cron: '30 11 * * *'
     - cron: '0 12 * * *'
-  workflow_dispatch: # 手動実行用ボタン
+  workflow_dispatch:
 
 jobs:
   run-research:
     runs-on: ubuntu-latest
 
     steps:
-      - name: リポジトリのコードを取得
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: master
 
-      - name: Python環境のセットアップ
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 必要なパッケージのインストール
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
           pip install requests beautifulsoup4 pillow google-genai selenium webdriver-manager
 
-      - name: リサーチプログラム実行
+      - name: Run script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python main.py
- requests beautifulsoup4 pillow google-genai selenium webdriver-manager
 
-    - name: スクリプトの実行
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
