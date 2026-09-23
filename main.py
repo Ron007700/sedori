@@ -19,18 +19,21 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ==================================================
-# 1. 環境変数からの設定読み込み
+# 1. 環境変数からの設定読み込み & ストア設定
 # ==================================================
 API_KEY = os.environ.get("GEMINI_API_KEY")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY)
 
-STORE_SELLER_ID = "4m1MXp8rnM1kYKAYHvHVULadMvgMD"
+# 巡回対象のストアリスト
+STORES = [
+    {"name": "ブランドHavana", "id": "4m1MXp8rnM1kYKAYHvHVULadMvgMD"},
+    {"name": "日本貴金属", "id": "BaLo7yetbAXTrZxWNL5iV2ESPpPb6"}
+]
 SEARCH_KEYWORD = "ソーラー"
-TARGET_SEARCH_URL = f"https://auctions.yahoo.co.jp/seller/{STORE_SELLER_ID}?p={SEARCH_KEYWORD}&select=22&is_auction=1&s1=end&o1=a"
 
-def send_discord_notify(item, result):
+def send_discord_notify(store_name, item, result):
     """Discordに判定結果を通知する"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ DISCORD_WEBHOOK_URLが未設定のため、通知をスキップします。")
@@ -39,6 +42,7 @@ def send_discord_notify(item, result):
     message = f"""
 🔔 **【仕入れチャンス到来！】**
 ----------------------------------------
+🏪 **店舗**: {store_name}
 📌 **タイトル**: {item['title']}
 ⏰ **残り時間**: {item['time']}
 🔗 **URL**: {item['url']}
@@ -47,7 +51,7 @@ def send_discord_notify(item, result):
 📊 **評価**: {result.get('condition_score', '-')}
 💰 **稼働時想定売価**: {result.get('estimated_resale_normal', '-')}
 ⚠️ **ジャンク時想定売価**: {result.get('estimated_resale_junk', '-')}
-🎯 **推奨落札上限 (利益1000円)**: **{result.get('max_bid_price_target', '-')}**
+🎯 **推奨落札上限 (目標利益確保)**: **{result.get('max_bid_price_target', '-')}**
 🛡️ **ジャンク防衛ライン (利益±0)**: {result.get('max_bid_price_break_even', '-')}
 💡 **理由**: {result.get('reasoning', '-')}
 ----------------------------------------
@@ -93,8 +97,8 @@ def human_sleep(min_sec=3, max_sec=6):
 # ==================================================
 # 3. 残り1時間未満の出品物URLを自動抽出
 # ==================================================
-def get_urgent_auction_urls(driver, search_url):
-    print(f"🔍 ブランドHavana 内を検索中...\nURL: {search_url}\n", flush=True)
+def get_urgent_auction_urls(driver, store_name, search_url):
+    print(f"🔍 【{store_name}】 内を検索中...\nURL: {search_url}\n", flush=True)
     driver.get(search_url)
     human_sleep(4, 7)
     
@@ -188,13 +192,15 @@ def analyze_watch(title, description, images):
    - ①「稼働品（正常動作品）」としての想定販売相場
    - ②「不動・ジャンク（パーツ取り）」としての想定販売相場
 
-2. コスト前提:
-   - 販売手数料：10%
-   - 発送送料（ゆうパケットポスト等）：210円
+2. コスト前提：
+   - 販売手数料（メルカリ等）：10%
+   - 販売時発送送料（メルカリ等）：210円
+   - ヤフオク仕入れ時送料：990円（一律）
 
-3. 仕入れ判定と上限額計算:
-   - 【通常上限（利益確保）】 = 稼働品想定売価 - 手数料(10%) - 送料(210円) - 目標利益(1000円)
-   - 【防衛ライン（利益±0）】 = ジャンク想定売価 - 手数料(10%) - 送料(210円)
+3. 仕入れ判定と上限額計算：
+   - 実質仕入原価 ＝ 落札価格 ＋ 仕入れ送料(990円)
+   - 利益 ＝ 販売相場 - 手数料(10%) - 販売送料(210円) - (落札価格 + 990円)
+   - 推奨落札上限額（max_bid_price_target）は、上記計算で希望利益が得られる「ヤフオクでの本体落札の上限価格」として算出してください。
 
 出力は以下のJSON形式のみで回答してください：
 {{
@@ -203,7 +209,7 @@ def analyze_watch(title, description, images):
   "condition_score": "A（推奨）/ B（慎重）/ C（不可）",
   "estimated_resale_normal": "稼働想定売価",
   "estimated_resale_junk": "ジャンク想定売価",
-  "max_bid_price_target": "推奨落札上限額（目標利益1000円確保）",
+  "max_bid_price_target": "推奨落札上限額（目標利益確保）",
   "max_bid_price_break_even": "ジャンク時トントン上限（利益±0円）",
   "reasoning": "判定理由と上限額の根拠（80文字以内）"
 }}
@@ -231,20 +237,32 @@ if __name__ == "__main__":
         print("🚀 自動リサーチプログラムを起動します...", flush=True)
         driver = create_browser()
         
-        target_items = get_urgent_auction_urls(driver, TARGET_SEARCH_URL)
-        
-        # 1日20回制限対策として最大15件に限定
-        MAX_ITEMS = 15
-        target_items = target_items[:MAX_ITEMS]
-        
-        print(f"⏰ 残り時間が短い上位【 {len(target_items)} 件 】を厳選してチェックします。\n", flush=True)
-        
-        if not target_items:
-            print("該当する商品は見つかりませんでした。", flush=True)
-        else:
+        # 設定された各ストアを順番に巡回
+        for store in STORES:
+            store_name = store["name"]
+            seller_id = store["id"]
+            
+            target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&select=22&is_auction=1&s1=end&o1=a"
+            
+            print(f"\n========================================", flush=True)
+            print(f"🏪 巡回開始: 【 {store_name} 】", flush=True)
+            print(f"========================================", flush=True)
+            
+            target_items = get_urgent_auction_urls(driver, store_name, target_search_url)
+            
+            # 各ストアごとに最大15件まで処理
+            MAX_ITEMS = 15
+            target_items = target_items[:MAX_ITEMS]
+            
+            print(f"⏰ 残り時間が短い上位【 {len(target_items)} 件 】を厳選してチェックします。\n", flush=True)
+            
+            if not target_items:
+                print(f"【{store_name}】に該当する商品は見つかりませんでした。", flush=True)
+                continue
+                
             for i, item in enumerate(target_items, 1):
-                print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", flush=True)
-                print(f"【{i}/{len(target_items)}】残り時間: {item['time']} | {item['title'][:25]}...", flush=True)
+                print(f"────────────────────────────────────────", flush=True)
+                print(f"[{store_name}] 【{i}/{len(target_items)}】残り時間: {item['time']} | {item['title'][:25]}...", flush=True)
                 
                 try:
                     title, description, images = fetch_auction_details(driver, item['url'])
@@ -258,7 +276,7 @@ if __name__ == "__main__":
                     # 判定結果が「A（推奨）」または「B（慎重）」のときだけDiscordへ通知！
                     if "A" in score or "B" in score:
                         print(f"🎯 利益見込み案件を発見！Discordへ通知します。", flush=True)
-                        send_discord_notify(item, res)
+                        send_discord_notify(store_name, item, res)
                     else:
                         print(f"⏩ スルー（評価Cのため通知なし）", flush=True)
                         
@@ -268,7 +286,7 @@ if __name__ == "__main__":
                 # アクセス制限回避のため、次の商品取得までにランダムで3〜6秒待機
                 human_sleep(3, 6)
                 
-        print("\n🎉 すべての自動処理が正常に終了しました！", flush=True)
+        print("\n🎉 すべてのストアの自動処理が正常に終了しました！", flush=True)
 
     except Exception as e:
         print(f"❌ 全体エラー: {e}", flush=True)
