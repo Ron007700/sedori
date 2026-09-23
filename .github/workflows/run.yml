@@ -1,13 +1,12 @@
 name: Auto Watch Research
 
-on:
+on
   schedule:
-    # 日本時間 20:30, 21:00, 21:30（UTC: 11:30, 12:00, 12:30）
+    # 日本時間 (JST) 19:00, 20:30, 21:00 に自動実行
+    - cron: '0 10 * * *'
     - cron: '30 11 * * *'
     - cron: '0 12 * * *'
-    - cron: '30 12 * * *'
-  workflow_dispatch:
-  # 手動実行ボタンを有効化
+  workflow_dispatch: # 手動実行用ボタン
 
 jobs:
   run-research:
