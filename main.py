@@ -33,6 +33,9 @@ STORES = [
 ]
 SEARCH_KEYWORD = "ソーラー"
 
+# 除外したいブランドキーワード（タイトルに含まれる場合スキップ）
+EXCLUDE_KEYWORDS = ["ELGIN", "Elgin", "elgin", "エルジン"]
+
 def send_discord_notify(store_name, item, result):
     """Discordに判定結果を通知する"""
     if not DISCORD_WEBHOOK_URL:
@@ -128,6 +131,12 @@ def get_urgent_auction_urls(driver, store_name, search_url):
                 title = a.get_text().strip()
                 if not title or len(title) < 5:
                     title = parent_text[:35] if parent_text else "タイトル不明"
+                
+                # --- 除外ブランドの判定 ---
+                if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
+                    print(f"🚫 除外対象ブランドのためスキップ: {title[:20]}...", flush=True)
+                    continue
+                # --------------------------
                     
                 if not any(x['clean_url'] == clean_url for x in urgent_items):
                     urgent_items.append({
