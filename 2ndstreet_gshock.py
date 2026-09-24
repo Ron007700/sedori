@@ -1,6 +1,6 @@
 import os
 import json
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 
 # 設定
@@ -33,6 +33,8 @@ def send_line_notification(message):
     headers = {"Authorization": f"Bearer {LINE_NOTIFY_TOKEN}"}
     data = {"message": message}
     try:
+        # LINE通知送信には標準のrequestsを使用
+        import requests
         res = requests.post(url, headers=headers, data=data)
         res.raise_for_status()
         print("Notification sent successfully.")
@@ -42,24 +44,25 @@ def send_line_notification(message):
 def main():
     seen_items = load_seen_items()
     
-    # ブロック（403エラー）回避用のヘッダー設定
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-        "Referer": "https://www.2ndstreet.jp/"
-    }
+    # cloudscraperを使用してセキュリティ（Cloudflare等）の403ブロックを回避
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
 
     try:
-        res = requests.get(TARGET_URL, headers=headers, timeout=15)
+        res = scraper.get(TARGET_URL, timeout=15)
         res.raise_for_status()
     except Exception as e:
         print(f"Error fetching URL: {e}")
         return
 
     soup = BeautifulSoup(res.text, "html.parser")
-    # 商品リストを取得（※2ndstreetのHTML構造に合わせたセレクタ）
-    items = soup.select("li.itemCard") or soup.select(".item")
+    # 商品カード要素を取得
+    items = soup.select("li.itemCard") or soup.select(".item") or soup.select("[class*='itemCard']")
 
     new_items_found = False
     for item in items:
@@ -67,7 +70,8 @@ def main():
         if not link_tag or "href" not in link_tag.attrs:
             continue
         
-        item_url = "https://www.2ndstreet.jp" + link_tag["href"]
+        href = link_tag["href"]
+        item_url = href if href.startswith("http") else "https://www.2ndstreet.jp" + href
         item_id = item_url.split("/")[-1]
 
         if item_id not in seen_items:
