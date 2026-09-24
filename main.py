@@ -189,7 +189,7 @@ def fetch_auction_details(driver, url):
     return title, description, images
 
 # ==================================================
-# 5. Gemini 3.6 Flash による目利き
+# 5. Gemini 3.6 Flash による目利き（リトライ機能付き）
 # ==================================================
 def analyze_watch(title, description, images):
     prompt = f"""
@@ -227,15 +227,24 @@ def analyze_watch(title, description, images):
 【商品説明文】: {description}
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=images + [prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.1
-        )
-    )
-    return json.loads(response.text)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=images + [prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
+                )
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"  ⚠️ Gemini一時的エラー発生（{e}）。5秒後に再試行します... ({attempt + 1}/{max_retries})", flush=True)
+                time.sleep(5)
+            else:
+                raise e
 
 # ==================================================
 # 6. メイン実行処理
