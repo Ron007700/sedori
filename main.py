@@ -12,7 +12,6 @@ from google.genai import types
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -67,7 +66,7 @@ def send_discord_notify(store_name, item, result):
         print(f"❌ Discord通知エラー: {e}")
 
 # ==================================================
-# 2. Chromeブラウザ起動（Bot検知回避対策強化）
+# 2. Chromeブラウザ起動（互換性確保＆Bot検知回避）
 # ==================================================
 def create_browser():
     options = Options()
@@ -85,8 +84,13 @@ def create_browser():
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    # バージョン互換性を考慮したドライバー設定
+    try:
+        from selenium.webdriver.chrome.service import Service
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception:
+        driver = webdriver.Chrome(executable_path=ChromeDriverManager().install(), options=options)
     
     # JavaScriptのnavigator.webdriverを偽装
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -189,7 +193,7 @@ def fetch_auction_details(driver, url):
     return title, description, images
 
 # ==================================================
-# 5. Gemini 3.6 Flash による目利き（キズ・外観評価判定の強化）
+# 5. Gemini 3.6 Flash による目利き（キズ・外観評価判定の強化＆リトライ機能）
 # ==================================================
 def analyze_watch(title, description, images):
     prompt = f"""
