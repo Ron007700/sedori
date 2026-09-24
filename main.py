@@ -12,7 +12,7 @@ from google.genai import types
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -56,7 +56,7 @@ def send_discord_notify(store_name, item, result):
 ⚠️ **ジャンク時想定売価**: {result.get('estimated_resale_junk', '-')}
 🎯 **推奨落札上限 (目標利益確保)**: **{result.get('max_bid_price_target', '-')}**
 🛡️ **ジャンク防衛ライン (利益±0)**: {result.get('max_bid_price_break_even', '-')}
-💡 **理由**: {result.get('reasoning', '-')}
+💡 **理由・状態感**: {result.get('reasoning', '-')}
 ----------------------------------------
 """
     payload = {"content": message}
@@ -189,16 +189,23 @@ def fetch_auction_details(driver, url):
     return title, description, images
 
 # ==================================================
-# 5. Gemini 3.6 Flash による目利き（リトライ機能付き）
+# 5. Gemini 3.6 Flash による目利き（キズ・外観評価判定の強化）
 # ==================================================
 def analyze_watch(title, description, images):
     prompt = f"""
 あなたは中古ソーラー時計の転売・仕入れ目利き専門家です。
-提供された「商品画像」と「タイトル・商品説明文」を分析し、仕入れ判定と落札上限額（送料込み総額）を試算してください。
+添付された商品画像とタイトル・商品説明文を細部まで精査し、外観ダメージ（特に風防キズ）を厳しく見極めた上で仕入れ判定を行ってください。
+
+【最重要：外観ダメージ・風防チェック基準】
+1. 画像を拡大・比較して以下を厳重にチェックしてください：
+   - 風防（ガラス面）：線キズ、深い引っかき傷、ヒビ割れ、欠け、内部のカビ・曇りがないか
+   - ベゼル・ケース：著しい打痕、金メッキの剥げ、激しい腐食や錆がないか
+   - 文字盤・針：変色、日焼け、シミがないか
+2. 風防に視認できる線キズや擦れがある場合、またはケース・ベゼルのダメージが目立つ場合は、研磨・修復の手間や再販売価格の低下を考慮し、評価を「C（不可）」または「B（慎重）」へ下げてください。
 
 【計算ロジックの設定】
 1. 想定相場（2パターン）:
-   - ①「稼働品（正常動作品）」としての想定販売相場
+   - ①「稼働品（正常動作品）」としての想定販売相場（キズの状態を考慮して相場を算出）
    - ②「不動・ジャンク（パーツ取り）」としての想定販売相場
 
 2. コスト前提：
@@ -220,7 +227,7 @@ def analyze_watch(title, description, images):
   "estimated_resale_junk": "ジャンク想定売価",
   "max_bid_price_target": "推奨落札上限額（目標利益確保）",
   "max_bid_price_break_even": "ジャンク時トントン上限（利益±0円）",
-  "reasoning": "判定理由と上限額の根拠（80文字以内）"
+  "reasoning": "風防・外観のキズの状態と、判定・上限額の理由（80文字以内）"
 }}
 
 【商品タイトル】: {title}
@@ -284,12 +291,13 @@ if __name__ == "__main__":
                 
                 try:
                     title, description, images = fetch_auction_details(driver, item['url'])
-                    print("🤖 Gemini 3.6 Flashで目利き試算中...", flush=True)
+                    print("🤖 Gemini 3.6 Flashで目利き試算中（風防・外観厳密チェック）...", flush=True)
                     
                     res = analyze_watch(title, description, images)
                     
                     score = res.get("condition_score", "")
                     print(f"  └ 判定結果: {score} | 通常上限: {res.get('max_bid_price_target')} | 防衛線: {res.get('max_bid_price_break_even')}")
+                    print(f"  └ 理由/状態: {res.get('reasoning')}")
                     
                     # 判定結果が「A（推奨）」または「B（慎重）」のときだけDiscordへ通知！
                     if "A" in score or "B" in score:
