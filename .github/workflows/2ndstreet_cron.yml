@@ -13,6 +13,8 @@ jobs:
     steps:
     - name: リポジトリのチェックアウト
       uses: actions/checkout@v4
+      with:
+        ref: master  # ← masterブランチを指定
 
     - name: Python環境のセットアップ
       uses: actions/setup-python@v5
