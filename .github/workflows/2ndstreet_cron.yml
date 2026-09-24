@@ -4,7 +4,7 @@ on:
   schedule:
     # 日本時間 17:00〜21:00 の30分おき（UTC 08:00〜12:00）
     - cron: '0,30 8-12 * * *'
-  workflow_dispatch: # 手動実行ボタンも有効化
+  workflow_dispatch: # 手動実行ボタンを有効化
 
 jobs:
   run-scraper:
@@ -26,7 +26,7 @@ jobs:
 
     - name: スクレイピング実行
       env:
-        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        DISCORD_WEBHOOK_URL_2NDSTREET: ${{ secrets.DISCORD_WEBHOOK_URL_2NDSTREET }}
       run: |
         python 2ndstreet_gshock.py
 
