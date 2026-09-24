@@ -2,11 +2,21 @@ import os
 import json
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
-# 設定
 TARGET_URL = "https://www.2ndstreet.jp/search?category=900001&keyword=G-SHOCK"
-SEEN_FILE = "seen_items.json"
-LINE_NOTIFY_TOKEN = os.environ.get("LINE_NOTIFY_TOKEN")
+SEEN_FILE = "seen_items_2ndstreet.json"
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL_2NDSTREET")
+
+KEYWORDS = [
+    "TWIN SENSOR", "TRIPLE SENSOR", "ALTI", "SURF",
+    "オレンジ", "ピンク", "ネイビー", "グリーン", "イエロー",
+    "迷彩", "カモフラ", "マーブル", "グラデーション",
+    "フロッグマン", "FROGMAN", "マッドマン", "ガルフマン", "レイズマン",
+    "スカイフォース", "DW-6700", "DW-002", "DW-003", "DW-004", "DW-8800", "DW-9000",
+    "ラバーズコレクション", "ラバコレ", "イルクジ", "コラボ",
+    "タフソーラー", "電波ソーラー"
+]
 
 def load_seen_items():
     if os.path.exists(SEEN_FILE):
@@ -14,80 +24,108 @@ def load_seen_items():
             with open(SEEN_FILE, "r", encoding="utf-8") as f:
                 return set(json.load(f))
         except Exception as e:
-            print(f"Error loading {SEEN_FILE}: {e}")
+            print(f"Error loading seen items: {e}")
             return set()
     return set()
 
-def save_seen_items(seen_items):
+def save_seen_items(seen):
     try:
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(seen_items), f, ensure_ascii=False, indent=2)
+            json.dump(list(seen), f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"Error saving {SEEN_FILE}: {e}")
+        print(f"Error saving seen items: {e}")
 
-def send_line_notification(message):
-    if not LINE_NOTIFY_TOKEN:
-        print("LINE_NOTIFY_TOKEN is not set.")
+def send_discord_notification(item):
+    if not DISCORD_WEBHOOK_URL:
+        print("Discord Webhook URL is not set.")
         return
-    url = "https://notify-api.line.me/api/notify"
-    headers = {"Authorization": f"Bearer {LINE_NOTIFY_TOKEN}"}
-    data = {"message": message}
-    try:
-        res = requests.post(url, headers=headers, data=data)
-        res.raise_for_status()
-        print("Notification sent successfully.")
-    except Exception as e:
-        print(f"Error sending LINE notification: {e}")
 
-def main():
-    seen_items = load_seen_items()
-    
-    # ブロック（403エラー）回避用のヘッダー設定
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-        "Referer": "https://www.2ndstreet.jp/"
+    payload = {
+        "content": f"🚨 **【セカスト】利益候補 G-SHOCK 発見！** 🚨\n\n"
+                   f"**商品名**: {item['title']}\n"
+                   f"**価格**: {item['price']:,}円\n"
+                   f"**キーワード**: {item['matched_keyword']}\n"
+                   f"**URL**: {item['url']}"
     }
 
     try:
-        res = requests.get(TARGET_URL, headers=headers, timeout=15)
-        res.raise_for_status()
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        if res.status_code == 204:
+            print(f"Successfully notified: {item['title']}")
+        else:
+            print(f"Failed to send Discord notification: {res.status_code}, {res.text}")
     except Exception as e:
-        print(f"Error fetching URL: {e}")
+        print(f"Error sending Discord notification: {e}")
+
+def get_html_with_playwright():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        page.goto(TARGET_URL, wait_until="networkidle", timeout=30000)
+        html = page.content()
+        browser.close()
+        return html
+
+def main():
+    seen_items = load_seen_items()
+
+    try:
+        html = get_html_with_playwright()
+    except Exception as e:
+        print(f"Error fetching page with Playwright: {e}")
         return
 
-    soup = BeautifulSoup(res.text, "html.parser")
-    # 商品リストを取得（※2ndstreetのHTML構造に合わせたセレクタ）
-    items = soup.select("li.itemCard") or soup.select(".item")
+    soup = BeautifulSoup(html, "html.parser")
+    items = soup.select("li.itemCard") or soup.select(".item") or soup.select("[class*='itemCard']")
 
-    new_items_found = False
+    new_matches = []
+
     for item in items:
+        title_tag = item.find("p", class_="itemCard_name") or item.find("h3") or item.find("p")
+        price_tag = item.find("p", class_="itemCard_price") or item.find("span", class_="price")
         link_tag = item.find("a")
-        if not link_tag or "href" not in link_tag.attrs:
+
+        if not (title_tag and price_tag and link_tag):
             continue
-        
-        item_url = "https://www.2ndstreet.jp" + link_tag["href"]
-        item_id = item_url.split("/")[-1]
 
-        if item_id not in seen_items:
-            title_tag = item.find("p", class_="itemCard_name") or item.find("h3") or item.find("p")
-            price_tag = item.find("p", class_="itemCard_price") or item.find("span", class_="price")
-            
-            title = title_tag.get_text(strip=True) if title_tag else "G-SHOCK"
-            price = price_tag.get_text(strip=True) if price_tag else "価格不明"
+        title = title_tag.get_text(strip=True)
+        price_str = price_tag.get_text(strip=True).replace("￥", "").replace(",", "").replace("（税込）", "")
 
-            message = f"\n【新着 G-SHOCK 発見】\n{title}\n価格: {price}\n{item_url}"
-            print(f"New item found: {title}")
-            send_line_notification(message)
-            
-            seen_items.add(item_id)
-            new_items_found = True
+        try:
+            price = int(price_str)
+        except ValueError:
+            continue
 
-    if new_items_found:
-        save_seen_items(seen_items)
-    else:
-        print("No new items found.")
+        href = link_tag.get("href", "")
+        url = href if href.startswith("http") else "https://www.2ndstreet.jp" + href
+        item_id = url.split("/")[-1]
+
+        if item_id in seen_items:
+            continue
+
+        matched = None
+        for kw in KEYWORDS:
+            if kw.lower() in title.lower():
+                matched = kw
+                break
+
+        if price <= 8000 and matched:
+            new_matches.append({
+                "id": item_id,
+                "title": title,
+                "price": price,
+                "matched_keyword": matched,
+                "url": url
+            })
+
+    for match in new_matches:
+        send_discord_notification(match)
+        seen_items.add(match["id"])
+
+    save_seen_items(seen_items)
 
 if __name__ == "__main__":
     main()
