@@ -1,17 +1,19 @@
-name: Auto Watch Research
+name: run-research
 
 on:
   schedule:
+    # 日本時間 19:00, 20:30, 21:00 に自動実行（UTC 10:00, 11:30, 12:00）
     - cron: '0 10 * * *'
     - cron: '30 11 * * *'
     - cron: '0 12 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 手動実行用ボタン
 
 jobs:
-  run-research:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -21,9 +23,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          pip install requests beautifulsoup4 pillow google-genai selenium webdriver-manager
+          python -m pip install --upgrade pip
+          pip install google-genai requests beautifulsoup4 pillow selenium webdriver-manager
 
       - name: Run script
         env:
