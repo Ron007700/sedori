@@ -2,8 +2,8 @@ name: 2ndstreet G-SHOCK Scraper (Cron)
 
 on:
   schedule:
-    # 日本時間 17:00〜21:00 の30分おき（UTC 08:00〜12:00）
-    - cron: '0,30 8-12 * * *'
+    # 日本時間 17:00〜21:00 の30分おき（27分・57分実行）
+    - cron: '27,57 8-12 * * *'
   workflow_dispatch:
 
 jobs:
