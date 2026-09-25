@@ -2,11 +2,11 @@ name: run-research
 
 on:
   schedule:
-    # 日本時間 19:00, 20:30, 21:00 に自動実行（UTC 10:00, 11:30, 12:00）
-    - cron: '0 10 * * *'
-    - cron: '30 11 * * *'
-    - cron: '0 12 * * *'
-  workflow_dispatch: # 手動実行用ボタン
+    # 日本時間 19:03, 20:33, 21:03 （UTC 10:03, 11:33, 12:03）
+    - cron: '3 10 * * *'
+    - cron: '33 11 * * *'
+    - cron: '3 12 * * *'
+  workflow_dispatch:
 
 jobs:
   build:
