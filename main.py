@@ -263,7 +263,8 @@ if __name__ == "__main__":
             store_name = store["name"]
             seller_id = store["id"]
             
-            target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&select=22&is_auction=1&s1=end&o1=a"
+            # category_id=23140 (アクセサリー、時計) を指定して時計ジャンルに限定
+            target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
             
             print(f"\n========================================", flush=True)
             print(f"🏪 巡回開始: 【 {store_name} 】", flush=True)
