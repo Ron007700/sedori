@@ -64,7 +64,14 @@ def get_html_with_playwright():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
         page = context.new_page()
-        page.goto(TARGET_URL, wait_until="networkidle", timeout=30000)
+        page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
+        
+        # JSによる商品描画を待機（最大5秒）
+        try:
+            page.wait_for_selector("a[href*='/goods/']", timeout=5000)
+        except Exception:
+            pass
+            
         html = page.content()
         browser.close()
         return html
@@ -85,23 +92,38 @@ def main():
         return
 
     soup = BeautifulSoup(html, "html.parser")
-    items = soup.select("li.itemCard") or soup.select(".itemCard") or soup.select("li[class*='item']")
+    
+    # 柔軟な商品要素抽出（商品リンクをベースに親要素を取得）
+    links = soup.find_all("a", href=True)
+    items = []
+    for a in links:
+        if "/goods/" in a["href"]:
+            # リンクの親カード要素を探索
+            parent = a.find_parent("li") or a.find_parent("div")
+            if parent and parent not in items:
+                items.append(parent)
 
     print(f"📦 取得した商品件数: {len(items)}件")
 
     new_matches = []
 
     for item in items:
-        title_tag = item.find("p", class_="itemCard_name") or item.find("h3") or item.find("p")
-        price_tag = item.find("p", class_="itemCard_price") or item.find("span", class_="price")
-        link_tag = item.find("a")
-
-        if not (title_tag and price_tag and link_tag):
+        link_tag = item if item.name == "a" else item.find("a", href=True)
+        if not link_tag:
             continue
 
-        title = title_tag.get_text(strip=True)
-        price_str = price_tag.get_text(strip=True).replace("￥", "").replace(",", "").replace("（税込）", "")
+        title = item.get_text(" ", strip=True)
+        
+        # 価格の抽出（数字列を取得）
+        import re
+        price_match = re.search(r"[￥¥]\s*([\d,]+)", title)
+        if not price_match:
+            price_match = re.search(r"([\d,]+)\s*円", title)
 
+        if not price_match:
+            continue
+
+        price_str = price_match.group(1).replace(",", "")
         try:
             price = int(price_str)
         except ValueError:
@@ -109,7 +131,7 @@ def main():
 
         href = link_tag.get("href", "")
         url = href if href.startswith("http") else "https://www.2ndstreet.jp" + href
-        item_id = url.split("/")[-1]
+        item_id = url.split("?")[0].split("/")[-1]
 
         if item_id in seen_items:
             continue
@@ -123,7 +145,7 @@ def main():
         if price <= 8000 and matched:
             new_matches.append({
                 "id": item_id,
-                "title": title,
+                "title": title[:50] + "..." if len(title) > 50 else title,
                 "price": price,
                 "matched_keyword": matched,
                 "url": url
