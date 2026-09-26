@@ -186,7 +186,7 @@ def fetch_auction_details(driver, url):
     return title, description, images
 
 # ==================================================
-# 5. Gemini 3.6 Flash による目利き（風防・外観厳格判定）
+# 5. Gemini 3.6 Flash による目利き（503混雑対策強化）
 # ==================================================
 def analyze_watch(title, description, images):
     prompt = f"""
@@ -231,7 +231,7 @@ def analyze_watch(title, description, images):
 【商品説明文】: {description}
 """
 
-    max_retries = 3
+    max_retries = 5  # リトライ回数を5回に増加
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
@@ -245,8 +245,10 @@ def analyze_watch(title, description, images):
             return json.loads(response.text)
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"  ⚠️ Gemini一時的エラー発生（{e}）。5秒後に再試行します... ({attempt + 1}/{max_retries})", flush=True)
-                time.sleep(5)
+                # 試行ごとに10秒、20秒、30秒... と待機時間を伸ばして過負荷を回避
+                wait_time = (attempt + 1) * 10
+                print(f"  ⚠️ Gemini一時的エラー（503等）が発生しました。{wait_time}秒後に再試行します... ({attempt + 1}/{max_retries})", flush=True)
+                time.sleep(wait_time)
             else:
                 raise e
 
@@ -263,7 +265,7 @@ if __name__ == "__main__":
             store_name = store["name"]
             seller_id = store["id"]
             
-            # category_id=23140 (アクセサリー、時計) を指定して時計ジャンルに限定
+            # category_id=23140 (アクセサリー、時計) 指定を追加
             target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
             
             print(f"\n========================================", flush=True)
