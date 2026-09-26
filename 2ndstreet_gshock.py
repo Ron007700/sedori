@@ -66,23 +66,14 @@ def get_html_with_playwright():
             viewport={"width": 1280, "height": 800}
         )
         page = context.new_page()
-        page.goto(TARGET_URL, wait_until="networkidle", timeout=45000)
-        
-        # レンダリングを確実にするため少しスクロールして5秒待機
-        page.evaluate("window.scrollTo(0, 500)")
-        time.sleep(5)
-            
+        page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=45000)
+        time.sleep(3)
         html = page.content()
         browser.close()
         return html
 
 def main():
     print("🚀 スクレイピングを開始します...")
-    if not DISCORD_WEBHOOK_URL:
-        print("⚠️ Warning: DISCORD_WEBHOOK_URL_2NDSTREET が設定されていません。")
-    else:
-        print("✅ Discord Webhook URL を検出しました。")
-
     seen_items = load_seen_items()
 
     try:
@@ -93,23 +84,29 @@ def main():
 
     soup = BeautifulSoup(html, "html.parser")
     
-    # 全てのHTMLから商品情報を広域スキャン
-    items = soup.find_all(lambda tag: tag.name in ["li", "div"] and any(k in tag.get("class", []) for k in ["item", "itemCard", "product"]))
-    if not items:
-        # クラス名不一致対策：aタグのリンク構造から直接要素抽出
-        items = [a.parent for a in soup.find_all("a", href=True) if "/goods/" in a["href"]]
+    # 🔍 デバッグ情報の出力
+    print(f"📄 ページタイトル: {soup.title.string if soup.title else 'タイトルなし'}")
+    all_links = soup.find_all("a", href=True)
+    print(f"🔗 検出した全リンク数: {len(all_links)}件")
+    
+    sample_hrefs = [a['href'] for a in all_links[:10]]
+    print(f"👀 リンクのサンプル（先頭10件）: {sample_hrefs}")
+
+    # 商品カードの汎用判定
+    items = []
+    for a in all_links:
+        href = a['href']
+        if any(path in href for path in ["/goods/", "/item/", "/search/"]):
+            parent = a.find_parent("li") or a.find_parent("div")
+            if parent and parent not in items:
+                items.append(parent)
 
     print(f"📦 取得した商品件数: {len(items)}件")
 
     new_matches = []
-
     for item in items:
         link_tag = item if item.name == "a" else item.find("a", href=True)
-        if not link_tag or "href" not in link_tag.attrs:
-            continue
-
-        href = link_tag["href"]
-        if "/goods/" not in href:
+        if not link_tag:
             continue
 
         title = item.get_text(" ", strip=True)
@@ -125,6 +122,7 @@ def main():
         except ValueError:
             continue
 
+        href = link_tag.get("href", "")
         url = href if href.startswith("http") else "https://www.2ndstreet.jp" + href
         item_id = url.split("?")[0].split("/")[-1]
 
