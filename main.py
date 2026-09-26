@@ -25,14 +25,16 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY)
 
-# 巡回対象のストアリスト
+# 巡回対象のストアリスト（全4店舗）
 STORES = [
-    {"name": "ブランドHavana", "id": "4m1MXp8rnM1kYKAYHvHVULadMvgMD"},
-    {"name": "日本貴金属", "id": "BaLo7yetbAXTrZxWNL5iV2ESPpPb6"}
+    {"name": "日本貴金属", "id": "BaLo7yetbAXTrZxWNL5iV2ESPpPb6"},
+    {"name": "Fii", "id": "88qw1vitqMALJSEUEqiZDDTmNSoiQ"},
+    {"name": "TAKARAYA", "id": "A9ajxEQZ34DuDBbQoJKDh4bFYA74N"},
+    {"name": "TVCストア1号店", "id": "GHXf6dTmnn7SLWbqAEeiBU1rrJHM6"}
 ]
 SEARCH_KEYWORD = "ソーラー"
 
-# 除外したいブランドキーワード（タイトルに含まれる場合スキップ）
+# 除外したいブランドキーワード
 EXCLUDE_KEYWORDS = ["ELGIN", "Elgin", "elgin", "エルジン"]
 
 def send_discord_notify(store_name, item, result):
@@ -66,7 +68,7 @@ def send_discord_notify(store_name, item, result):
         print(f"❌ Discord通知エラー: {e}")
 
 # ==================================================
-# 2. Chromeブラウザ起動（互換性確保＆Bot検知回避）
+# 2. Chromeブラウザ起動
 # ==================================================
 def create_browser():
     options = Options()
@@ -75,16 +77,11 @@ def create_browser():
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
-    
-    # 対策1: 一般的なPC用User-Agentを偽装
     options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
-    
-    # 対策2: 自動化検出フラグ（Bot判定）を消去
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
 
-    # バージョン互換性を考慮したドライバー設定
     try:
         from selenium.webdriver.chrome.service import Service
         service = Service(ChromeDriverManager().install())
@@ -92,24 +89,20 @@ def create_browser():
     except Exception:
         driver = webdriver.Chrome(executable_path=ChromeDriverManager().install(), options=options)
     
-    # JavaScriptのnavigator.webdriverを偽装
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    
     return driver
 
-# 人間らしい動きを演出するためのランダムスリープ
 def human_sleep(min_sec=3, max_sec=6):
     time.sleep(random.uniform(min_sec, max_sec))
 
 # ==================================================
-# 3. 残り1時間未満の出品物URLを自動抽出
+# 3. 厳格に「残り1時間未満（〜分、〜秒）」のみ抽出
 # ==================================================
 def get_urgent_auction_urls(driver, store_name, search_url):
     print(f"🔍 【{store_name}】 内を検索中...\nURL: {search_url}\n", flush=True)
     driver.get(search_url)
     human_sleep(4, 7)
     
-    # ランダムなタイミングでスクロール（人間の操作を疑似再現）
     for _ in range(4):
         scroll_height = random.randint(600, 1000)
         driver.execute_script(f"window.scrollBy(0, {scroll_height});")
@@ -128,6 +121,7 @@ def get_urgent_auction_urls(driver, store_name, search_url):
             parent = a.find_parent(["li", "div", "article"])
             parent_text = parent.get_text(" ", strip=True) if parent else ""
             
+            # 厳格ルール: 「分」または「秒」が含まれ、かつ「日」「時間」が含まれない（1時間未満）のみ抽出
             if ("分" in parent_text or "秒" in parent_text) and not ("日" in parent_text or "時間" in parent_text):
                 time_match = re.search(r'(\d+分|\d+秒)', parent_text)
                 time_str = time_match.group(0) if time_match else "1時間未満"
@@ -136,11 +130,10 @@ def get_urgent_auction_urls(driver, store_name, search_url):
                 if not title or len(title) < 5:
                     title = parent_text[:35] if parent_text else "タイトル不明"
                 
-                # --- 除外ブランドの判定 ---
+                # 除外ブランドのスキップ判定
                 if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
                     print(f"🚫 除外対象ブランドのためスキップ: {title[:20]}...", flush=True)
                     continue
-                # --------------------------
                     
                 if not any(x['clean_url'] == clean_url for x in urgent_items):
                     urgent_items.append({
@@ -158,7 +151,7 @@ def get_urgent_auction_urls(driver, store_name, search_url):
 def fetch_auction_details(driver, url):
     driver.get(url)
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    human_sleep(3, 5)  # ページ取得ごとにランダム待機
+    human_sleep(3, 5)
     
     soup = BeautifulSoup(driver.page_source, "html.parser")
     
@@ -193,7 +186,7 @@ def fetch_auction_details(driver, url):
     return title, description, images
 
 # ==================================================
-# 5. Gemini 3.6 Flash による目利き（キズ・外観評価判定の強化＆リトライ機能）
+# 5. Gemini 3.6 Flash による目利き（風防・外観厳格判定）
 # ==================================================
 def analyze_watch(title, description, images):
     prompt = f"""
@@ -266,7 +259,6 @@ if __name__ == "__main__":
         print("🚀 自動リサーチプログラムを起動します...", flush=True)
         driver = create_browser()
         
-        # 設定された各ストアを順番に巡回
         for store in STORES:
             store_name = store["name"]
             seller_id = store["id"]
@@ -279,14 +271,13 @@ if __name__ == "__main__":
             
             target_items = get_urgent_auction_urls(driver, store_name, target_search_url)
             
-            # 各ストアごとに最大15件まで処理
             MAX_ITEMS = 15
             target_items = target_items[:MAX_ITEMS]
             
-            print(f"⏰ 残り時間が短い上位【 {len(target_items)} 件 】を厳選してチェックします。\n", flush=True)
+            print(f"⏰ 残り1時間未満の上位【 {len(target_items)} 件 】を厳選してチェックします。\n", flush=True)
             
             if not target_items:
-                print(f"【{store_name}】に該当する商品は見つかりませんでした。", flush=True)
+                print(f"【{store_name}】に該当する商品（残り1時間未満）は見つかりませんでした。", flush=True)
                 continue
                 
             for i, item in enumerate(target_items, 1):
@@ -303,7 +294,6 @@ if __name__ == "__main__":
                     print(f"  └ 判定結果: {score} | 通常上限: {res.get('max_bid_price_target')} | 防衛線: {res.get('max_bid_price_break_even')}")
                     print(f"  └ 理由/状態: {res.get('reasoning')}")
                     
-                    # 判定結果が「A（推奨）」または「B（慎重）」のときだけDiscordへ通知！
                     if "A" in score or "B" in score:
                         print(f"🎯 利益見込み案件を発見！Discordへ通知します。", flush=True)
                         send_discord_notify(store_name, item, res)
@@ -313,7 +303,6 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"❌ 解析エラー: {e}", flush=True)
                     
-                # アクセス制限回避のため、次の商品取得までにランダムで3〜6秒待機
                 human_sleep(3, 6)
                 
         print("\n🎉 すべてのストアの自動処理が正常に終了しました！", flush=True)
