@@ -37,7 +37,7 @@ def save_seen_items(seen):
 
 def send_discord_notification(item):
     if not DISCORD_WEBHOOK_URL:
-        print("Discord Webhook URL is not set.")
+        print("❌ Discord Webhook URL is missing from Secrets!")
         return
 
     payload = {
@@ -51,9 +51,9 @@ def send_discord_notification(item):
     try:
         res = requests.post(DISCORD_WEBHOOK_URL, json=payload)
         if res.status_code == 204:
-            print(f"Successfully notified: {item['title']}")
+            print(f"✅ Discordへ通知送信完了: {item['title']}")
         else:
-            print(f"Failed to send Discord notification: {res.status_code}, {res.text}")
+            print(f"❌ Discord通知エラー: {res.status_code}, {res.text}")
     except Exception as e:
         print(f"Error sending Discord notification: {e}")
 
@@ -70,6 +70,12 @@ def get_html_with_playwright():
         return html
 
 def main():
+    print("🚀 スクレイピングを開始します...")
+    if not DISCORD_WEBHOOK_URL:
+        print("⚠️ Warning: DISCORD_WEBHOOK_URL_2NDSTREET が設定されていません。")
+    else:
+        print("✅ Discord Webhook URL を検出しました。")
+
     seen_items = load_seen_items()
 
     try:
@@ -79,7 +85,9 @@ def main():
         return
 
     soup = BeautifulSoup(html, "html.parser")
-    items = soup.select("li.itemCard") or soup.select(".item") or soup.select("[class*='itemCard']")
+    items = soup.select("li.itemCard") or soup.select(".itemCard") or soup.select("li[class*='item']")
+
+    print(f"📦 取得した商品件数: {len(items)}件")
 
     new_matches = []
 
@@ -121,11 +129,14 @@ def main():
                 "url": url
             })
 
+    print(f"🎯 条件に合致した新着商品: {len(new_matches)}件")
+
     for match in new_matches:
         send_discord_notification(match)
         seen_items.add(match["id"])
 
     save_seen_items(seen_items)
+    print("✨ 処理が正常に完了しました。")
 
 if __name__ == "__main__":
     main()
