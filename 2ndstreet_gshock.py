@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -61,16 +62,15 @@ def get_html_with_playwright():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800}
         )
         page = context.new_page()
-        page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
+        page.goto(TARGET_URL, wait_until="networkidle", timeout=45000)
         
-        # JSによる商品描画を待機（最大5秒）
-        try:
-            page.wait_for_selector("a[href*='/goods/']", timeout=5000)
-        except Exception:
-            pass
+        # レンダリングを確実にするため少しスクロールして5秒待機
+        page.evaluate("window.scrollTo(0, 500)")
+        time.sleep(5)
             
         html = page.content()
         browser.close()
@@ -93,15 +93,11 @@ def main():
 
     soup = BeautifulSoup(html, "html.parser")
     
-    # 柔軟な商品要素抽出（商品リンクをベースに親要素を取得）
-    links = soup.find_all("a", href=True)
-    items = []
-    for a in links:
-        if "/goods/" in a["href"]:
-            # リンクの親カード要素を探索
-            parent = a.find_parent("li") or a.find_parent("div")
-            if parent and parent not in items:
-                items.append(parent)
+    # 全てのHTMLから商品情報を広域スキャン
+    items = soup.find_all(lambda tag: tag.name in ["li", "div"] and any(k in tag.get("class", []) for k in ["item", "itemCard", "product"]))
+    if not items:
+        # クラス名不一致対策：aタグのリンク構造から直接要素抽出
+        items = [a.parent for a in soup.find_all("a", href=True) if "/goods/" in a["href"]]
 
     print(f"📦 取得した商品件数: {len(items)}件")
 
@@ -109,17 +105,17 @@ def main():
 
     for item in items:
         link_tag = item if item.name == "a" else item.find("a", href=True)
-        if not link_tag:
+        if not link_tag or "href" not in link_tag.attrs:
+            continue
+
+        href = link_tag["href"]
+        if "/goods/" not in href:
             continue
 
         title = item.get_text(" ", strip=True)
         
-        # 価格の抽出（数字列を取得）
         import re
-        price_match = re.search(r"[￥¥]\s*([\d,]+)", title)
-        if not price_match:
-            price_match = re.search(r"([\d,]+)\s*円", title)
-
+        price_match = re.search(r"[￥¥]\s*([\d,]+)", title) or re.search(r"([\d,]+)\s*円", title)
         if not price_match:
             continue
 
@@ -129,7 +125,6 @@ def main():
         except ValueError:
             continue
 
-        href = link_tag.get("href", "")
         url = href if href.startswith("http") else "https://www.2ndstreet.jp" + href
         item_id = url.split("?")[0].split("/")[-1]
 
