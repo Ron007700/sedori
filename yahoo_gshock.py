@@ -25,7 +25,7 @@ MAX_PRICE_LIMIT = 8000
 # ① オークション専用URL（最高8,000円 / 競売のみ / 残り時間の短い順）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a"
 
-# ② 定額/フリマ専用URL（最高8,000円 / 定額即決のみ / 新着順：s1=bids&o1=a）
+# ② 定額/フリマ専用URL（最高8,000円 / 定額即決のみ / 新着順）
 URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_buynow=1&s1=bids&o1=a"
 
 SEEN_FILE = "seen_items_yahoo.json"
@@ -115,7 +115,7 @@ def send_discord_notification(item, g_result, seller_name):
         print(f"❌ Discord送信例外: {e}")
 
 # --------------------------------------------------
-# 3. Gemini による画像添削・真贋・相場推論（2.5-flashを使用）
+# 3. Gemini 3.8 Flash による画像添削・真贋・相場推論
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
     prompt = f"""
@@ -151,9 +151,9 @@ def analyze_gshock_with_gemini(title, description, images, price):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # 制限緩和のため gemini-2.5-flash を利用
+            # エラーログの推奨通り gemini-3.8-flash を直接指定
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=images + [prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -246,7 +246,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
         except ValueError:
             continue
 
-        # 8,000円超の広告・ストア商品は除外
+        # 【価格ガード】8,000円超の広告・ストア商品は除外
         if price > MAX_PRICE_LIMIT:
             continue
 
@@ -286,7 +286,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                 save_seen_items(seen_items)
                 continue
 
-            print("🤖 Gemini 2.5 Flashで目利き試算中...")
+            print("🤖 Gemini 3.8 Flashで目利き試算中...")
             g_result = analyze_gshock_with_gemini(title, description, images, price)
 
             if g_result:
@@ -298,7 +298,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                 except Exception:
                     max_target = 0
 
-                # 赤字補正
+                # 【強固な利益ガード】現在価格が「推奨上限額」以上の場合は不合格に補正
                 if price >= max_target and max_target > 0:
                     print(f"  ⚠️ 赤字判定補正: 現在価格({price}円) >= 推奨上限額({max_target}円)")
                     score = "C（不可）"
@@ -306,6 +306,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                 print(f"  └ 最終判定: {score} | 純正性: {auth} | 推奨上限: {max_target}円")
                 print(f"  └ 添削理由: {g_result.get('reasoning')}")
 
+                # 判定が A または B のみ Discord通知
                 if "A" in score or "B" in score:
                     item_data = {
                         "id": item_id,
@@ -331,7 +332,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
 # 6. メイン実行処理
 # --------------------------------------------------
 def main():
-    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（API制限回避・定額検索修正版）を開始します...")
+    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（Gemini 3.8 Flash固定版）を開始します...")
     seen_items = load_seen_items()
 
     with sync_playwright() as p:
