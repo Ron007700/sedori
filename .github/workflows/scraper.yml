@@ -2,9 +2,15 @@ name: Run Yahoo G-SHOCK Scraper
 
 on:
   schedule:
-    # 1時間ごとに自動実行
-    - cron: '0 * * * *'
-  workflow_dispatch: # 手動実行ボタンを有効化
+    # 17:26 JST -> 08:26 UTC
+    - cron: '26 8 * * *'
+    # 19:26 JST -> 10:26 UTC
+    - cron: '26 10 * * *'
+    # 20:26 JST -> 11:26 UTC
+    - cron: '26 11 * * *'
+    # 21:04 JST -> 12:04 UTC
+    - cron: '4 12 * * *'
+  workflow_dispatch: # 手動実行用ボタン（残しておくと便利です）
 
 jobs:
   run-scraper:
