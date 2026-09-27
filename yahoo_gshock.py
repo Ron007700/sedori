@@ -19,9 +19,17 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY)
 
-# ヤフオク検索URL（G-SHOCK ＆ 最高8,000円 ＆ オークション＋定額/フリマの両方を対象 ＆ 終了が近い順）
-TARGET_URL = "https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max=8000&auccat=23140&select=22&s1=end&o1=a"
+# ① オークション専用URL（最高8,000円 / 競売のみ / 残り時間の短い順）
+URL_AUCTION = "https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max=8000&auccat=23140&is_auction=1&s1=end&o1=a"
+
+# ② 定額/フリマ専用URL（最高8,000円 / 定額のみ / 新着順）
+URL_FIXED = "https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max=8000&auccat=23140&is_buynow=1&s1=cbids&o1=d"
+
 SEEN_FILE = "seen_items_yahoo.json"
+
+# 件数上限
+MAX_AUCTION_ITEMS = 20  # オークション上限20件
+MAX_FIXED_ITEMS = 10    # 定額上限10件
 
 # ① 狙い目キーワード
 TARGET_KEYWORDS = [
@@ -34,7 +42,7 @@ TARGET_KEYWORDS = [
     "タフソーラー", "電波ソーラー", "ソーラー"
 ]
 
-# ② NGキーワード（CHG・充電不足・不動・ジャンク・動作未確認・破損等を排除）
+# ② NGキーワード（排除条件）
 NG_KEYWORDS = [
     "CHG", "充電不足",
     "不動", "ジャンク", "動作未確認",
@@ -140,7 +148,7 @@ def analyze_gshock_with_gemini(title, description, images, price):
 【商品説明文】: {description}
 """
 
-    max_retries = 5
+    max_retries = 3
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
@@ -154,7 +162,7 @@ def analyze_gshock_with_gemini(title, description, images, price):
             return json.loads(response.text)
         except Exception as e:
             if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 8
+                wait_time = (attempt + 1) * 3
                 print(f"  ⚠️ Gemini一時的エラー。{wait_time}秒後に再試行します... ({attempt + 1}/{max_retries})")
                 time.sleep(wait_time)
             else:
@@ -162,11 +170,11 @@ def analyze_gshock_with_gemini(title, description, images, price):
                 return None
 
 # --------------------------------------------------
-# 4. 詳細ページ情報・画像取得
+# 4. 詳細ページ情報・画像取得（高速化のため最大4枚取得）
 # --------------------------------------------------
 def fetch_detail_page(page, url):
-    page.goto(url, wait_until="domcontentloaded", timeout=20000)
-    time.sleep(2)
+    page.goto(url, wait_until="domcontentloaded", timeout=15000)
+    time.sleep(1)
     
     html = page.content()
     soup = BeautifulSoup(html, "html.parser")
@@ -185,7 +193,7 @@ def fetch_detail_page(page, url):
             if clean_url not in img_urls and not clean_url.endswith(".gif"):
                 img_urls.append(clean_url)
                 
-    img_urls = img_urls[:8]
+    img_urls = img_urls[:4]
     
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     images = []
@@ -194,7 +202,7 @@ def fetch_detail_page(page, url):
             res = requests.get(img_url, headers=headers, timeout=5)
             if res.status_code == 200:
                 img = Image.open(BytesIO(res.content))
-                img.thumbnail((800, 800))
+                img.thumbnail((600, 600))
                 images.append(img)
         except Exception:
             continue
@@ -202,10 +210,112 @@ def fetch_detail_page(page, url):
     return seller_name, description, images
 
 # --------------------------------------------------
-# 5. メイン実行処理
+# 5. 商品処理の共通関数
+# --------------------------------------------------
+def process_target_list(page, target_url, max_limit, sale_type_label, seen_items):
+    print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
+    page.goto(target_url, wait_until="networkidle", timeout=25000)
+    page.evaluate("window.scrollBy(0, 800)")
+    time.sleep(1)
+        
+    html = page.content()
+    soup = BeautifulSoup(html, "html.parser")
+    items = soup.select(".Product") or soup.select("li.Product")
+    print(f"📦 検出件数: {len(items)}件（上位{max_limit}件を精査）")
+
+    processed_count = 0
+
+    for item in items:
+        if processed_count >= max_limit:
+            print(f"⏱️ 【{sale_type_label}】の上限{max_limit}件に達したため完了。")
+            break
+
+        title_tag = item.select_one(".Product__titleLink")
+        price_tag = item.select_one(".Product__priceValue")
+
+        if not (title_tag and price_tag):
+            continue
+
+        title = title_tag.get_text(strip=True)
+        price_raw = price_tag.get_text(strip=True)
+        price_str = price_raw.replace("円", "").replace(",", "").replace("即決", "").strip()
+
+        try:
+            price = int(price_str)
+        except ValueError:
+            continue
+
+        url = title_tag.get("href", "")
+        item_id = item.get("data-auction-id") or url.split("/")[-1]
+
+        # 既読スキップ
+        if item_id in seen_items:
+            continue
+
+        # ① NGキーワードチェック（タイトル）
+        if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
+            continue
+
+        # ② ターゲットキーワードのチェック
+        matched_keyword = None
+        for kw in TARGET_KEYWORDS:
+            if kw.lower() in title.lower():
+                matched_keyword = kw
+                break
+
+        if not matched_keyword:
+            continue
+
+        processed_count += 1
+        print(f"🎯 狙い目 [{sale_type_label} {processed_count}/{max_limit}]: [{matched_keyword}] | 価格: {price}円 | {title[:25]}...")
+
+        # ③ 詳細ページ取得＆Gemini解析
+        try:
+            seller_name, description, images = fetch_detail_page(page, url)
+            
+            text_to_check = f"{title} {description}".lower()
+            found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
+            if found_ng:
+                print(f"  ⏩ 本文NGワード検出のためスキップ: {', '.join(found_ng)}")
+                seen_items.add(item_id)
+                save_seen_items(seen_items)
+                continue
+
+            print("🤖 Gemini 3.6 Flashで目利き試算中...")
+            g_result = analyze_gshock_with_gemini(title, description, images, price)
+
+            if g_result:
+                score = g_result.get("condition_score", "")
+                auth = g_result.get("authenticity_status", "")
+                print(f"  └ 判定: {score} | 純正性: {auth} | 推奨上限: {g_result.get('max_bid_price_target')}円")
+                print(f"  └ 添削理由: {g_result.get('reasoning')}")
+
+                if "A" in score or "B" in score:
+                    item_data = {
+                        "id": item_id,
+                        "title": title,
+                        "price": price,
+                        "sale_type": sale_type_label,
+                        "matched_keyword": matched_keyword,
+                        "url": url
+                    }
+                    send_discord_notification(item_data, g_result, seller_name)
+                else:
+                    print("  ⏩ スルー（社外品/偽物疑い/利益薄のため通知なし）")
+
+            seen_items.add(item_id)
+            save_seen_items(seen_items)
+
+        except Exception as e:
+            print(f"❌ 詳細解析エラー: {e}")
+
+        time.sleep(1)
+
+# --------------------------------------------------
+# 6. メイン実行処理
 # --------------------------------------------------
 def main():
-    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（オークション＆フリマ対応 / Gemini 3.6 Flash）を開始します...")
+    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（競売20件:終了間近 / フリマ10件:新着順）を開始します...")
     seen_items = load_seen_items()
 
     with sync_playwright() as p:
@@ -214,106 +324,16 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
         page = context.new_page()
-        
-        print(f"🔍 検索URLへアクセス中（競売＋定額）: {TARGET_URL}")
-        page.goto(TARGET_URL, wait_until="networkidle", timeout=30000)
-        
-        for _ in range(3):
-            page.evaluate("window.scrollBy(0, 800)")
-            time.sleep(1)
-            
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        items = soup.select(".Product") or soup.select("li.Product")
-        print(f"📦 検出商品数: {len(items)}件（オークション・定額混在）")
 
-        for item in items:
-            title_tag = item.select_one(".Product__titleLink")
-            price_tag = item.select_one(".Product__priceValue")
+        # 1. オークション（残り時間短い順：20件）
+        process_target_list(page, URL_AUCTION, MAX_AUCTION_ITEMS, "オークション(終了間近)", seen_items)
 
-            if not (title_tag and price_tag):
-                continue
-
-            title = title_tag.get_text(strip=True)
-            price_raw = price_tag.get_text(strip=True)
-            
-            sale_type = "定額/即決" if "即決" in price_raw else "オークション"
-            price_str = price_raw.replace("円", "").replace(",", "").replace("即決", "").strip()
-
-            try:
-                price = int(price_str)
-            except ValueError:
-                continue
-
-            url = title_tag.get("href", "")
-            item_id = item.get("data-auction-id") or url.split("/")[-1]
-
-            # 既読スキップ
-            if item_id in seen_items:
-                continue
-
-            # ① NGキーワードチェック（タイトルで簡易フィルタ）
-            if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
-                continue
-
-            # ② ターゲットキーワードのチェック
-            matched_keyword = None
-            for kw in TARGET_KEYWORDS:
-                if kw.lower() in title.lower():
-                    matched_keyword = kw
-                    break
-
-            if not matched_keyword:
-                continue
-
-            print(f"\n🎯 狙い目キーワード検出: [{matched_keyword}] | 価格: {price}円 ({sale_type}) | {title[:25]}...")
-
-            # ③ 詳細ページを取得して画像・説明文・出品者をスクレイピング
-            try:
-                seller_name, description, images = fetch_detail_page(page, url)
-                
-                # 詳細本文でのNGキーワードチェック
-                text_to_check = f"{title} {description}".lower()
-                found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
-                if found_ng:
-                    print(f"  ⏩ NGワード検出のためスキップ: {', '.join(found_ng)}")
-                    seen_items.add(item_id)
-                    save_seen_items(seen_items)
-                    continue
-
-                print("🤖 Gemini 3.6 Flashで目利き（真贋・社外品・画像添削・売価計算）試算中...")
-                g_result = analyze_gshock_with_gemini(title, description, images, price)
-
-                if g_result:
-                    score = g_result.get("condition_score", "")
-                    auth = g_result.get("authenticity_status", "")
-                    print(f"  └ 判定: {score} | 純正性: {auth} | 仕入れ推奨上限: {g_result.get('max_bid_price_target')}円")
-                    print(f"  └ 添削理由: {g_result.get('reasoning')}")
-
-                    # 評価AまたはBの場合にDiscord通知
-                    if "A" in score or "B" in score:
-                        item_data = {
-                            "id": item_id,
-                            "title": title,
-                            "price": price,
-                            "sale_type": sale_type,
-                            "matched_keyword": matched_keyword,
-                            "url": url
-                        }
-                        send_discord_notification(item_data, g_result, seller_name)
-                    else:
-                        print("  ⏩ スルー（社外品/偽物疑い/利益薄のため通知なし）")
-
-                seen_items.add(item_id)
-                save_seen_items(seen_items)
-
-            except Exception as e:
-                print(f"❌ 詳細解析エラー: {e}")
-
-            time.sleep(random.uniform(2, 4))
+        # 2. 定額/フリマ（新着順：10件）
+        process_target_list(page, URL_FIXED, MAX_FIXED_ITEMS, "定額/フリマ(新着順)", seen_items)
 
         browser.close()
-    print("\n✨ すべてのリサーチ・目利き処理が正常に完了しました。")
+
+    print("\n✨ すべてのリサーチが高速に完了しました。")
 
 if __name__ == "__main__":
     main()
