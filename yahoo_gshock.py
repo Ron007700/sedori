@@ -25,8 +25,8 @@ MAX_PRICE_LIMIT = 8000
 # ① オークション専用URL（最高8,000円 / 競売のみ / 残り時間の短い順）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a"
 
-# ② 定額/フリマ専用URL（最高8,000円 / 定額のみ / 新着順）
-URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_buynow=1&s1=cbids&o1=d"
+# ② 定額/フリマ専用URL（最高8,000円 / 定額即決のみ / 新着順：s1=bids&o1=a）
+URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_buynow=1&s1=bids&o1=a"
 
 SEEN_FILE = "seen_items_yahoo.json"
 
@@ -115,7 +115,7 @@ def send_discord_notification(item, g_result, seller_name):
         print(f"❌ Discord送信例外: {e}")
 
 # --------------------------------------------------
-# 3. Gemini 3.6 Flash による画像添削・真贋・相場推論
+# 3. Gemini による画像添削・真贋・相場推論（2.5-flashを使用）
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
     prompt = f"""
@@ -130,7 +130,7 @@ def analyze_gshock_with_gemini(title, description, images, price):
 【利益判定の徹底】
 - 現在の出品価格は【 {price} 円 】です。
 - 手数料10%、送料梱包代450円、仕入れ送料990円を一律コストとし、仕入れ推奨上限額を計算してください。
-- **現在価格（{price}円）が推奨上限額を超えている場合、または利益が出ない（赤字）場合は、絶対に「C（不可）」と判定してください。**
+- 現在価格（{price}円）が推奨上限額を超えている場合、または利益が出ない（赤字）場合は、絶対に「C（不可）」と判定してください。
 
 以下のJSON形式でのみ回答してください：
 {{
@@ -151,8 +151,9 @@ def analyze_gshock_with_gemini(title, description, images, price):
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            # 制限緩和のため gemini-2.5-flash を利用
             response = client.models.generate_content(
-                model="gemini-3.6-flash",
+                model="gemini-2.5-flash",
                 contents=images + [prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -245,7 +246,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
         except ValueError:
             continue
 
-        # 【価格ガード】8,000円超の広告・ストア商品は除外
+        # 8,000円超の広告・ストア商品は除外
         if price > MAX_PRICE_LIMIT:
             continue
 
@@ -285,20 +286,19 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                 save_seen_items(seen_items)
                 continue
 
-            print("🤖 Gemini 3.6 Flashで目利き試算中...")
+            print("🤖 Gemini 2.5 Flashで目利き試算中...")
             g_result = analyze_gshock_with_gemini(title, description, images, price)
 
             if g_result:
                 score = g_result.get("condition_score", "")
                 auth = g_result.get("authenticity_status", "")
                 
-                # 数値キャスト（安全のため）
                 try:
                     max_target = int(g_result.get('max_bid_price_target', 0))
                 except Exception:
                     max_target = 0
 
-                # 【強固な利益ガード】現在価格が「推奨上限額」以上の場合は不合格に補正
+                # 赤字補正
                 if price >= max_target and max_target > 0:
                     print(f"  ⚠️ 赤字判定補正: 現在価格({price}円) >= 推奨上限額({max_target}円)")
                     score = "C（不可）"
@@ -306,7 +306,6 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                 print(f"  └ 最終判定: {score} | 純正性: {auth} | 推奨上限: {max_target}円")
                 print(f"  └ 添削理由: {g_result.get('reasoning')}")
 
-                # 判定が A または B のみ Discord通知
                 if "A" in score or "B" in score:
                     item_data = {
                         "id": item_id,
@@ -332,7 +331,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
 # 6. メイン実行処理
 # --------------------------------------------------
 def main():
-    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（利益厳格判定版）を開始します...")
+    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（API制限回避・定額検索修正版）を開始します...")
     seen_items = load_seen_items()
 
     with sync_playwright() as p:
@@ -350,7 +349,7 @@ def main():
 
         browser.close()
 
-    print("\n✨ すべてのリサーチが安全に完了しました。")
+    print("\n✨ すべてのリサーチが正常に完了しました。")
 
 if __name__ == "__main__":
     main()
