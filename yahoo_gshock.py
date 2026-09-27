@@ -1,158 +1,122 @@
-import os
-import json
-import time
-import re
-import requests
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+import math
 
-# 1. ヤフオク全体のG-SHOCK検索URL（時計カテゴリ内・8000円以下・残り時間が短い順）
-TARGET_URL = "https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&auccat=23140&max=8000&s1=bids&o1=a"
-SEEN_FILE = "seen_items_yahoo.json"
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-
-# 2. 抽出条件キーワード
-KEYWORDS = [
-    "TWIN SENSOR", "TRIPLE SENSOR", "ALTI", "SURF",
-    "オレンジ", "ピンク", "ネイビー", "グリーン", "イエロー",
-    "迷彩", "カモフラ", "マーブル", "グラデーション",
-    "フロッグマン", "FROGMAN", "マッドマン", "ガルフマン", "レイズマン",
-    "スカイフォース", "DW-6700", "DW-002", "DW-003", "DW-004", "DW-8800", "DW-9000",
-    "ラバーズコレクション", "ラバコレ", "イルクジ", "コラボ",
-    "タフソーラー", "電波ソーラー"
-]
-
-def load_seen_items():
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
-        except Exception as e:
-            print(f"Error loading seen items: {e}")
-            return set()
-    return set()
-
-def save_seen_items(seen):
-    try:
-        with open(SEEN_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(seen), f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Error saving seen items: {e}")
-
-def send_discord_notification(item):
-    if not DISCORD_WEBHOOK_URL:
-        print("❌ Discord Webhook URL is missing from Secrets!")
-        return
-
-    payload = {
-        "content": f"🚨 **【ヤフオク】利益候補 G-SHOCK 発見！** 🚨\n\n"
-                   f"**商品名**: {item['title']}\n"
-                   f"**現在価格/即決**: {item['price']:,}円\n"
-                   f"**キーワード**: {item['matched_keyword']}\n"
-                   f"**URL**: {item['url']}"
-    }
-
-    try:
-        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        if res.status_code == 204:
-            print(f"✅ Discordへ通知送信完了: {item['title']}")
-        else:
-            print(f"❌ Discord通知エラー: {res.status_code}, {res.text}")
-    except Exception as e:
-        print(f"Error sending Discord notification: {e}")
-
-def get_html_with_playwright():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800}
-        )
-        page = context.new_page()
-        page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=45000)
-        time.sleep(3)
-        html = page.content()
-        browser.close()
-        return html
-
-def main():
-    print("🚀 ヤフオクスクレイピングを開始します...")
-    if not DISCORD_WEBHOOK_URL:
-        print("⚠️ Warning: DISCORD_WEBHOOK_URL が設定されていません。")
-    else:
-        print("✅ Discord Webhook URL を検出しました。")
-
-    seen_items = load_seen_items()
-
-    try:
-        html = get_html_with_playwright()
-    except Exception as e:
-        print(f"Error fetching page with Playwright: {e}")
-        return
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    # ヤフオクの検索結果アイテムカードを取得
-    product_tags = soup.select(".Product, li.Product") or soup.find_all(["li", "div"], class_=re.compile("Product"))
+def check_item_eligibility(item_data):
+    """
+    仕入れ対象かどうかの判定を行う関数
     
-    print(f"📦 取得した商品件数: {len(product_tags)}件")
-
-    new_matches = []
-    for item in product_tags:
-        link_tag = item.find("a", href=True)
-        if not link_tag:
-            continue
-
-        href = link_tag.get("href", "")
-        if "/auction/" not in href:
-            continue
-
-        title = link_tag.get_text(" ", strip=True) or item.get_text(" ", strip=True)
-        
-        full_text = item.get_text(" ", strip=True)
-        price_match = re.search(r"[￥¥]\s*([\d,]+)", full_text) or re.search(r"([\d,]+)\s*円", full_text)
-        
-        if not price_match:
-            continue
-
-        price_str = price_match.group(1).replace(",", "")
-        try:
-            price = int(price_str)
-        except ValueError:
-            continue
-
-        url = href.split("?")[0]
-        if not url.startswith("http"):
-            url = "https://page.auctions.yahoo.co.jp" + url
+    item_data = {
+        "title": 商品タイトルや説明文,
+        "buy_price": 仕入れ価格（買値）,
+        "estimated_sell_price": 想定販売価格（売値相場）,
+        "type": "solar" または "quartz",
+        "description": 商品の補足説明（オプション）
+    }
+    """
+    
+    # --------------------------------------------------
+    # 1. 状態NGキーワードチェック（即除外ロジック）
+    # --------------------------------------------------
+    ng_keywords = [
+        "加水分解", "割れ", "ベタつき", "ベタツキ",  # 加水分解・劣化
+        "ベゼル欠品", "ベゼル破損", "ベゼル割れ", "ベゼル不良", # ベゼル不良
+        "遊環なし", "遊環欠品", "リング欠損",          # 遊環欠品
+        "ガラス傷", "ガラスキズ", "風防欠け", "風防傷", # ガラス傷
+        "黄ばみ", "色あせ", "変色", "日焼け",           # 日焼け・変色
+        "CHG", "充電不足",                             # ソーラー点滅・消灯
+        "不動", "ジャンク", "動作未確認"               # 不動品
+    ]
+    
+    # タイトルと商品説明文を結合して検索対象にする
+    text_to_check = item_data.get("title", "") + " " + item_data.get("description", "")
+    
+    found_ng_words = []
+    for ng_word in ng_keywords:
+        if ng_word in text_to_check:
+            found_ng_words.append(ng_word)
             
-        item_id = url.split("/")[-1]
+    if found_ng_words:
+        return {
+            "result": False,
+            "reason": f"NGキーワード検知: {', '.join(found_ng_words)}",
+            "net_profit": 0,
+            "min_sell_price": 0
+        }
 
-        if item_id in seen_items:
-            continue
+    # --------------------------------------------------
+    # 2. 損益計算（相殺・最低利益ラインチェック）
+    # --------------------------------------------------
+    buy_price = item_data["buy_price"]
+    estimated_sell_price = item_data["estimated_sell_price"]
+    item_type = item_data.get("type", "quartz")  # デフォルトはクォーツ設定
+    
+    shipping_fee = 450  # 宅急便コンパクト送料
+    fee_rate = 0.10     # メルカリ等の手数料10%
+    
+    # 種別ごとの目標最低利益設定
+    target_profit = 100 if item_type == "solar" else 1500
+    
+    # ① 手元に残る純利益の計算式
+    # 純利益 = (想定売値 × 0.9) - 送料 - 仕入れ価格
+    net_profit = math.floor((estimated_sell_price * (1 - fee_rate)) - shipping_fee - buy_price)
+    
+    # ② 目標利益（＋原価全額相殺）を達成するために必要な最低販売価格の逆算
+    # 最低販売価格 = (仕入れ価格 + 送料 + 目標利益) / 0.9
+    min_sell_price = math.ceil((buy_price + shipping_fee + target_profit) / (1 - fee_rate))
 
-        matched = None
-        for kw in KEYWORDS:
-            if kw.lower() in title.lower():
-                matched = kw
-                break
+    # 判定処理
+    if net_profit >= target_profit:
+        return {
+            "result": True,
+            "reason": f"合格 (判定基準: {item_type}利益 +{target_profit}円以上)",
+            "net_profit": net_profit,
+            "min_sell_price": min_sell_price
+        }
+    else:
+        return {
+            "result": False,
+            "reason": f"利益不足 (見込み利益: {net_profit}円 / 必要最低利益: {target_profit}円)",
+            "net_profit": net_profit,
+            "min_sell_price": min_sell_price
+        }
 
-        if price <= 8000 and matched:
-            new_matches.append({
-                "id": item_id,
-                "title": title[:50] + "..." if len(title) > 50 else title,
-                "price": price,
-                "matched_keyword": matched,
-                "url": url
-            })
 
-    print(f"🎯 条件に合致した新着商品: {len(new_matches)}件")
+# ==================================================
+# 動作テスト例
+# ==================================================
 
-    for match in new_matches:
-        send_discord_notification(match)
-        seen_items.add(match["id"])
+# テスト1: 状態不良（加水分解あり）
+item_1 = {
+    "title": "G-SHOCK DW-5600 加水分解あり ジャンク",
+    "buy_price": 1000,
+    "estimated_sell_price": 3000,
+    "type": "quartz"
+}
 
-    save_seen_items(seen_items)
-    print("✨ 処理が正常に完了しました。")
+# テスト2: クォーツ（仕入れ1,000円、売値想定 3,000円）
+item_2 = {
+    "title": "G-SHOCK DW-5600E 美品",
+    "buy_price": 1000,
+    "estimated_sell_price": 3000,
+    "type": "quartz"
+}
 
-if __name__ == "__main__":
-    main()
+# テスト3: ソーラー（仕入れ1,000円、売値想定 1,800円）
+item_3 = {
+    "title": "G-SHOCK GW-M5610 タフソーラー 動作確認済み",
+    "buy_price": 1000,
+    "estimated_sell_price": 1800,
+    "type": "solar"
+}
+
+print("--- テスト1 (NGキーワードあり) ---")
+print(check_item_eligibility(item_1))
+
+print("\n--- テスト2 (クォーツ判定) ---")
+res2 = check_item_eligibility(item_2)
+print(f"結果: {res2['result']} | 理由: {res2['reason']}")
+print(f"見込み利益: {res2['net_profit']}円 | 基準達成に必要な最低売値: {res2['min_sell_price']}円")
+
+print("\n--- テスト3 (ソーラー判定) ---")
+res3 = check_item_eligibility(item_3)
+print(f"結果: {res3['result']} | 理由: {res3['reason']}")
+print(f"見込み利益: {res3['net_profit']}円 | 基準達成に必要な最低売値: {res3['min_sell_price']}円")
