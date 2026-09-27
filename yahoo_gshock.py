@@ -19,11 +19,14 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY)
 
+# 検索上限価格
+MAX_PRICE_LIMIT = 8000
+
 # ① オークション専用URL（最高8,000円 / 競売のみ / 残り時間の短い順）
-URL_AUCTION = "https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max=8000&auccat=23140&is_auction=1&s1=end&o1=a"
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a"
 
 # ② 定額/フリマ専用URL（最高8,000円 / 定額のみ / 新着順）
-URL_FIXED = "https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max=8000&auccat=23140&is_buynow=1&s1=cbids&o1=d"
+URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_buynow=1&s1=cbids&o1=d"
 
 SEEN_FILE = "seen_items_yahoo.json"
 
@@ -124,13 +127,10 @@ def analyze_gshock_with_gemini(title, description, images, price):
 - 偽物チェック：裏蓋刻印の浅さ、ボタンの配置・形状違和感、液晶表示の不自然さをチェック。
 - 社外パーツ使用（純正でない）や偽物の疑いがある場合は、判定を「C（不可）」にしてください。
 
-【外観ダメージ・状態の添削】
-- ベゼル/ベルトの加水分解（割れ・ベタつき・ひび割れ）の有無。
-- 風防（ガラス）の目立つキズ、液晶漏れ・文字盤ダメージの有無。
-
-【売価リサーチと推奨価格算出（現在価格/即決価格: {price}円）】
-- メルカリ・ヤフオク等の中古相場を基に「想定売価」を算出してください。
-- 手数料10%、送料梱包代450円、仕入れ送料990円を一律コストとし、目標利益が残る仕入れ上限価格を計算してください。
+【利益判定の徹底】
+- 現在の出品価格は【 {price} 円 】です。
+- 手数料10%、送料梱包代450円、仕入れ送料990円を一律コストとし、仕入れ推奨上限額を計算してください。
+- **現在価格（{price}円）が推奨上限額を超えている場合、または利益が出ない（赤字）場合は、絶対に「C（不可）」と判定してください。**
 
 以下のJSON形式でのみ回答してください：
 {{
@@ -170,7 +170,7 @@ def analyze_gshock_with_gemini(title, description, images, price):
                 return None
 
 # --------------------------------------------------
-# 4. 詳細ページ情報・画像取得（高速化のため最大4枚取得）
+# 4. 詳細ページ情報・画像取得
 # --------------------------------------------------
 def fetch_detail_page(page, url):
     page.goto(url, wait_until="domcontentloaded", timeout=15000)
@@ -245,6 +245,10 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
         except ValueError:
             continue
 
+        # 【価格ガード】8,000円超の広告・ストア商品は除外
+        if price > MAX_PRICE_LIMIT:
+            continue
+
         url = title_tag.get("href", "")
         item_id = item.get("data-auction-id") or url.split("/")[-1]
 
@@ -287,9 +291,22 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
             if g_result:
                 score = g_result.get("condition_score", "")
                 auth = g_result.get("authenticity_status", "")
-                print(f"  └ 判定: {score} | 純正性: {auth} | 推奨上限: {g_result.get('max_bid_price_target')}円")
+                
+                # 数値キャスト（安全のため）
+                try:
+                    max_target = int(g_result.get('max_bid_price_target', 0))
+                except Exception:
+                    max_target = 0
+
+                # 【強固な利益ガード】現在価格が「推奨上限額」以上の場合は不合格に補正
+                if price >= max_target and max_target > 0:
+                    print(f"  ⚠️ 赤字判定補正: 現在価格({price}円) >= 推奨上限額({max_target}円)")
+                    score = "C（不可）"
+
+                print(f"  └ 最終判定: {score} | 純正性: {auth} | 推奨上限: {max_target}円")
                 print(f"  └ 添削理由: {g_result.get('reasoning')}")
 
+                # 判定が A または B のみ Discord通知
                 if "A" in score or "B" in score:
                     item_data = {
                         "id": item_id,
@@ -301,7 +318,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                     }
                     send_discord_notification(item_data, g_result, seller_name)
                 else:
-                    print("  ⏩ スルー（社外品/偽物疑い/利益薄のため通知なし）")
+                    print("  ⏩ スルー（赤字/社外品/偽物疑いのため通知なし）")
 
             seen_items.add(item_id)
             save_seen_items(seen_items)
@@ -315,7 +332,7 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
 # 6. メイン実行処理
 # --------------------------------------------------
 def main():
-    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（競売20件:終了間近 / フリマ10件:新着順）を開始します...")
+    print("🚀 ヤフオク G-SHOCK仕入れリサーチ（利益厳格判定版）を開始します...")
     seen_items = load_seen_items()
 
     with sync_playwright() as p:
@@ -333,7 +350,7 @@ def main():
 
         browser.close()
 
-    print("\n✨ すべてのリサーチが高速に完了しました。")
+    print("\n✨ すべてのリサーチが安全に完了しました。")
 
 if __name__ == "__main__":
     main()
