@@ -2,15 +2,11 @@ name: Run Yahoo G-SHOCK Scraper
 
 on:
   schedule:
-    # 17:26 JST -> 08:26 UTC
-    - cron: '26 8 * * *'
-    # 19:26 JST -> 10:26 UTC
-    - cron: '26 10 * * *'
-    # 20:26 JST -> 11:26 UTC
-    - cron: '26 11 * * *'
-    # 21:04 JST -> 12:04 UTC
-    - cron: '4 12 * * *'
-  workflow_dispatch: # 手動実行用ボタン
+    - cron: '26 8 * * *'   # 日本時間 17:26
+    - cron: '26 10 * * *'  # 日本時間 19:26
+    - cron: '26 11 * * *'  # 日本時間 20:26
+    - cron: '4 12 * * *'   # 日本時間 21:04
+  workflow_dispatch:
 
 jobs:
   run-scraper:
