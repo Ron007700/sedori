@@ -2,10 +2,9 @@ name: run-research
 
 on:
   schedule:
-    # 日本時間 19:03, 20:33, 21:03 （UTC 10:03, 11:33, 12:03）
-    - cron: '3 10 * * *'
-    - cron: '33 11 * * *'
-    - cron: '3 12 * * *'
+    - cron: '3 10 * * *'   # 日本時間 19:03
+    - cron: '33 11 * * *'  # 日本時間 20:33
+    - cron: '3 12 * * *'   # 日本時間 21:03
   workflow_dispatch:
 
 jobs:
