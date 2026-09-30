@@ -20,10 +20,10 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY)
 
-# 検索上限価格（ZIPPOの狙い目・3,000円以下に変更）
+# 検索上限価格（3,000円以下）
 MAX_PRICE_LIMIT = 3000
 
-# URL（カテゴリ制限なし）
+# URL（スペースを修正）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
 URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=bids&o1=a"
 
@@ -124,7 +124,7 @@ def send_discord_notification(item, g_result, seller_name):
 🏪 **出品者**: {seller_name}
 📌 **商品名**: {item['title']}
 💰 **現在/即決価格**: {item['price']:,}円 ({item['sale_type']})
-🏷️ **ヒット属性**: {item['matched_keyword']}
+🏷️️ **ヒット属性**: {item['matched_keyword']}
 🔗 **URL**: {item['url']}
 
 💎 **素材判定**: {g_result.get('material_type', '不明')}
@@ -276,13 +276,11 @@ def process_target_list(
 ):
   print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
 
-  # 通信落ち着くまでしっかり待機
   try:
     page.goto(target_url, wait_until="networkidle", timeout=30000)
   except Exception:
     page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
 
-  # 段階的にスクロール（要素読込を誘発）
   for i in range(1, 4):
     page.evaluate(f"window.scrollTo(0, {i * 800});")
     time.sleep(0.8)
@@ -290,7 +288,6 @@ def process_target_list(
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
 
-  # 複数パターンで要素を探す
   items = (
       soup.select("li.Product")
       or soup.select(".Product")
@@ -298,7 +295,6 @@ def process_target_list(
       or soup.select("li[class*='Product']")
   )
 
-  # それでもダメならaタグ直探査
   if not items:
     items = soup.find_all("a", re.compile("Product__titleLink"))
 
@@ -311,7 +307,6 @@ def process_target_list(
       print(f"⏱️ 【{sale_type_label}】の上限{max_limit}件に達したため完了。")
       break
 
-    # タグ直探査の場合と通常のコンテナの場合に対応
     if item.name == "a":
       title_tag = item
       parent = item.find_parent("li") or item.find_parent("div")
@@ -348,7 +343,6 @@ def process_target_list(
 
     url = title_tag.get("href", "")
 
-    # ID抽出
     item_id = item.get("data-auction-id")
     if not item_id and url:
       match = re.search(r"/auction/([a-zA-Z0-9]+)", url)
@@ -448,7 +442,6 @@ def main():
   seen_items = load_seen_items()
 
   with sync_playwright() as p:
-    # headlessでもGoogle Chromeと同等のヘッダーを設定
     browser = p.chromium.launch(
         headless=True,
         args=[
