@@ -22,11 +22,12 @@ client = genai.Client(api_key=API_KEY)
 # 検索上限価格（ZIPPOの狙い目・15,000円以下）
 MAX_PRICE_LIMIT = 15000
 
+# ★ URLを修正: カテゴリ制限(auccat)を外し、ZIPPO全般から検索
 # ① オークション専用URL（最高15,000円 / 競売のみ / 残り時間の短い順）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&auccat=2084042857&is_auction=1&s1=end&o1=a"
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
 
 # ② 定額/フリマ専用URL（最高15,000円 / 定額即決のみ / 新着順）
-URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&auccat=2084042857&is_buynow=1&s1=bids&o1=a"
+URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=bids&o1=a"
 
 SEEN_FILE = "seen_zippo.json"
 
@@ -219,13 +220,18 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 def process_target_list(page, target_url, max_limit, sale_type_label, seen_items):
     print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
-    page.goto(target_url, wait_until="networkidle", timeout=25000)
-    page.evaluate("window.scrollBy(0, 800)")
-    time.sleep(1)
+    page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+    
+    # スクロールして要素を確実に読み込ませる
+    for _ in range(3):
+        page.evaluate("window.scrollBy(0, 1000)")
+        time.sleep(0.5)
         
     html = page.content()
     soup = BeautifulSoup(html, "html.parser")
-    items = soup.select(".Product") or soup.select("li.Product")
+    
+    # ★ 複数のセレクターに対応させて取得漏れを防止
+    items = soup.select(".Product") or soup.select("li.Product") or soup.select(".Product__item")
     print(f"📦 検出件数: {len(items)}件（上位{max_limit}件を精査）")
 
     processed_count = 0
@@ -235,27 +241,30 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
             print(f"⏱️ 【{sale_type_label}】の上限{max_limit}件に達したため完了。")
             break
 
-        title_tag = item.select_one(".Product__titleLink")
-        price_tag = item.select_one(".Product__priceValue")
+        title_tag = item.select_one(".Product__titleLink") or item.select_one("a[data-auction-title]") or item.select_one("h3 a")
+        price_tag = item.select_one(".Product__priceValue") or item.select_one(".Product__price") or item.select_one("span.Price__value")
 
         if not (title_tag and price_tag):
             continue
 
         title = title_tag.get_text(strip=True)
         price_raw = price_tag.get_text(strip=True)
-        price_str = price_raw.replace("円", "").replace(",", "").replace("即決", "").strip()
-
-        try:
-            price = int(price_str)
-        except ValueError:
+        
+        # 数字のみ抽出
+        price_digits = re.sub(r"[^\d]", "", price_raw)
+        if not price_digits:
             continue
+        price = int(price_digits)
 
         # 価格上限ガード
         if price > MAX_PRICE_LIMIT:
             continue
 
         url = title_tag.get("href", "")
-        item_id = item.get("data-auction-id") or url.split("/")[-1]
+        item_id = item.get("data-auction-id") or (url.split("/")[-1] if url else None)
+
+        if not item_id:
+            continue
 
         # 既読スキップ
         if item_id in seen_items:
