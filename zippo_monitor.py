@@ -23,9 +23,9 @@ client = genai.Client(api_key=API_KEY)
 # 検索上限価格（3,000円以下）
 MAX_PRICE_LIMIT = 3000
 
-# URL（定額側のソート指定を s1=cbids に修正）
+# URL（定額側は s1=new で確実に出品・新着順で取得）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
-URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=cbids&o1=a"
+URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=new&o1=a"
 
 SEEN_FILE = "seen_zippo.json"
 
