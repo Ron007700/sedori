@@ -1,4 +1,4 @@
-name: ZIPPO Monitor
+name: zippo_monitor
 
 on:
   schedule:
