@@ -1,0 +1,39 @@
+name: ZIPPO Monitor
+
+on:
+  schedule:
+    # 17:00〜22:00 (JST) のピークタイムを中心に15〜30分おきに実行
+    # UTC基準: 08:00〜13:00
+    - cron: '*/20 8-13 * * *'
+  workflow_dispatch: # 手動実行用
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-python: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install selenium beautifulsoup4 requests google-generativeai
+
+      - name: Run ZIPPO Monitor Script
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python zippo_monitor.py
+
+      - name: Commit and push changes (seen_ids.json)
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add seen_zippo.json
+          git commit -m "Update seen ZIPPO IDs" || exit 0
+          git push
