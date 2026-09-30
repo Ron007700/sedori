@@ -1,21 +1,21 @@
+import json
 import os
-import time
 import random
 import re
-import requests
-import json
-from bs4 import BeautifulSoup
+import time
 from io import BytesIO
-from PIL import Image
+
+from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
-
+from PIL import Image
+import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ==================================================
 # 1. 環境変数からの設定読み込み & ストア設定
@@ -30,24 +30,28 @@ STORES = [
     {"name": "日本貴金属", "id": "BaLo7yetbAXTrZxWNL5iV2ESPpPb6"},
     {"name": "Fii", "id": "88qw1vitqMALJSEUEqiZDDTmNSoiQ"},
     {"name": "TAKARAYA", "id": "A9ajxEQZ34DuDBbQoJKDh4bFYA74N"},
-    {"name": "TVCストア1号店", "id": "GHXf6dTmnn7SLWbqAEeiBU1rrJHM6"}
+    {"name": "TVCストア1号店", "id": "GHXf6dTmnn7SLWbqAEeiBU1rrJHM6"},
 ]
 SEARCH_KEYWORD = "ソーラー"
 
 # 除外したいブランドキーワード
 EXCLUDE_KEYWORDS = ["ELGIN", "Elgin", "elgin", "エルジン"]
 
-def send_discord_notify(store_name, item, result):
-    """Discordに判定結果を通知する"""
-    if not DISCORD_WEBHOOK_URL:
-        print("⚠️ DISCORD_WEBHOOK_URLが未設定のため、通知をスキップします。")
-        return
-        
-    message = f"""
+
+def send_discord_notify(store_name, item, result, current_price=0):
+  """Discordに判定結果を通知する"""
+  if not DISCORD_WEBHOOK_URL:
+    print("⚠️ DISCORD_WEBHOOK_URLが未設定のため、通知をスキップします。")
+    return
+
+  price_str = f"{current_price:,}円" if current_price > 0 else "不明"
+
+  message = f"""
 🔔 **【仕入れチャンス到来！】**
 ----------------------------------------
 🏪 **店舗**: {store_name}
 📌 **タイトル**: {item['title']}
+💰 **現在価格**: {price_str}
 ⏰ **残り時間**: {item['time']}
 🔗 **URL**: {item['url']}
 
@@ -60,136 +64,188 @@ def send_discord_notify(store_name, item, result):
 💡 **理由・状態感**: {result.get('reasoning', '-')}
 ----------------------------------------
 """
-    payload = {"content": message}
-    headers = {"Content-Type": "application/json"}
-    try:
-        requests.post(DISCORD_WEBHOOK_URL, data=json.dumps(payload), headers=headers, timeout=10)
-    except Exception as e:
-        print(f"❌ Discord通知エラー: {e}")
+  payload = {"content": message}
+  headers = {"Content-Type": "application/json"}
+  try:
+    requests.post(
+        DISCORD_WEBHOOK_URL,
+        data=json.dumps(payload),
+        headers=headers,
+        timeout=10,
+    )
+  except Exception as e:
+    print(f"❌ Discord通知エラー: {e}")
+
 
 # ==================================================
 # 2. Chromeブラウザ起動
 # ==================================================
 def create_browser():
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
+  options = Options()
+  options.add_argument("--headless=new")
+  options.add_argument("--no-sandbox")
+  options.add_argument("--disable-dev-shm-usage")
+  options.add_argument("--disable-gpu")
+  options.add_argument("--window-size=1920,1080")
+  options.add_argument(
+      "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+      " AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  )
+  options.add_argument("--disable-blink-features=AutomationControlled")
+  options.add_experimental_option("excludeSwitches", ["enable-automation"])
+  options.add_experimental_option("useAutomationExtension", False)
 
-    try:
-        from selenium.webdriver.chrome.service import Service
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-    except Exception:
-        driver = webdriver.Chrome(executable_path=ChromeDriverManager().install(), options=options)
-    
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    return driver
+  try:
+    from selenium.webdriver.chrome.service import Service
+
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+  except Exception:
+    driver = webdriver.Chrome(
+        executable_path=ChromeDriverManager().install(), options=options
+    )
+
+  driver.execute_script(
+      "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+  )
+  return driver
+
 
 def human_sleep(min_sec=3, max_sec=6):
-    time.sleep(random.uniform(min_sec, max_sec))
+  time.sleep(random.uniform(min_sec, max_sec))
+
 
 # ==================================================
 # 3. 厳格に「残り1時間未満（〜分、〜秒）」のみ抽出
 # ==================================================
 def get_urgent_auction_urls(driver, store_name, search_url):
-    print(f"🔍 【{store_name}】 内を検索中...\nURL: {search_url}\n", flush=True)
-    driver.get(search_url)
-    human_sleep(4, 7)
-    
-    for _ in range(4):
-        scroll_height = random.randint(600, 1000)
-        driver.execute_script(f"window.scrollBy(0, {scroll_height});")
-        human_sleep(1, 2)
-    
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    urgent_items = []
-    
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "/auction/" in href:
-            clean_url = href.split("?")[0]
-            if not clean_url.startswith("http"):
-                clean_url = "https://page.auctions.yahoo.co.jp" + clean_url
-                
-            parent = a.find_parent(["li", "div", "article"])
-            parent_text = parent.get_text(" ", strip=True) if parent else ""
-            
-            # 厳格ルール: 「分」または「秒」が含まれ、かつ「日」「時間」が含まれない（1時間未満）のみ抽出
-            if ("分" in parent_text or "秒" in parent_text) and not ("日" in parent_text or "時間" in parent_text):
-                time_match = re.search(r'(\d+分|\d+秒)', parent_text)
-                time_str = time_match.group(0) if time_match else "1時間未満"
-                
-                title = a.get_text().strip()
-                if not title or len(title) < 5:
-                    title = parent_text[:35] if parent_text else "タイトル不明"
-                
-                # 除外ブランドのスキップ判定
-                if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
-                    print(f"🚫 除外対象ブランドのためスキップ: {title[:20]}...", flush=True)
-                    continue
-                    
-                if not any(x['clean_url'] == clean_url for x in urgent_items):
-                    urgent_items.append({
-                        "title": title,
-                        "url": clean_url,
-                        "clean_url": clean_url,
-                        "time": time_str
-                    })
-                    
-    return urgent_items
+  print(
+      f"🔍 【{store_name}】 内を検索中...\nURL: {search_url}\n", flush=True
+  )
+  driver.get(search_url)
+  human_sleep(4, 7)
+
+  for _ in range(4):
+    scroll_height = random.randint(600, 1000)
+    driver.execute_script(f"window.scrollBy(0, {scroll_height});")
+    human_sleep(1, 2)
+
+  soup = BeautifulSoup(driver.page_source, "html.parser")
+  urgent_items = []
+
+  for a in soup.find_all("a", href=True):
+    href = a["href"]
+    if "/auction/" in href:
+      clean_url = href.split("?")[0]
+      if not clean_url.startswith("http"):
+        clean_url = "https://page.auctions.yahoo.co.jp" + clean_url
+
+      parent = a.find_parent(["li", "div", "article"])
+      parent_text = parent.get_text(" ", strip=True) if parent else ""
+
+      # 厳格ルール: 「分」または「秒」が含まれ、かつ「日」「時間」が含まれない（1時間未満）のみ抽出
+      if ("分" in parent_text or "秒" in parent_text) and not (
+          "日" in parent_text or "時間" in parent_text
+      ):
+        time_match = re.search(r"(\d+分|\d+秒)", parent_text)
+        time_str = time_match.group(0) if time_match else "1時間未満"
+
+        title = a.get_text().strip()
+        if not title or len(title) < 5:
+          title = parent_text[:35] if parent_text else "タイトル不明"
+
+        # 除外ブランドのスキップ判定
+        if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
+          print(
+              f"🚫 除外対象ブランドのためスキップ: {title[:20]}...",
+              flush=True,
+          )
+          continue
+
+        if not any(x["clean_url"] == clean_url for x in urgent_items):
+          urgent_items.append({
+              "title": title,
+              "url": clean_url,
+              "clean_url": clean_url,
+              "time": time_str,
+          })
+
+  return urgent_items
+
 
 # ==================================================
-# 4. 詳細情報 & 主要画像取得
+# 4. 詳細情報 & 主要画像 & 現在価格取得
 # ==================================================
 def fetch_auction_details(driver, url):
-    driver.get(url)
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    human_sleep(3, 5)
-    
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    
-    title_tag = soup.find("h1") or soup.find("meta", property="og:title")
-    title = title_tag.get("content") if title_tag and title_tag.name == "meta" else (title_tag.text.strip() if title_tag else "不明")
-    
-    desc_tag = soup.find("div", class_="ProductExplanation__commentArea") or soup.find("section", class_="ProductExplanation")
-    description = desc_tag.text.strip() if desc_tag else "説明文なし"
-    
-    img_urls = []
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
-        if "auctions.c.yimg.jp" in src:
-            clean_img_url = src.split("?")[0]
-            if clean_img_url not in img_urls and not clean_img_url.endswith(".gif"):
-                img_urls.append(clean_img_url)
-                
-    img_urls = img_urls[:8]
-    
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    images = []
-    for img_url in img_urls:
-        try:
-            res = requests.get(img_url, headers=headers, timeout=5)
-            if res.status_code == 200:
-                img = Image.open(BytesIO(res.content))
-                img.thumbnail((800, 800))
-                images.append(img)
-        except Exception:
-            continue
-            
-    return title, description, images
+  driver.get(url)
+  WebDriverWait(driver, 10).until(
+      EC.presence_of_element_located((By.TAG_NAME, "body"))
+  )
+  human_sleep(3, 5)
+
+  soup = BeautifulSoup(driver.page_source, "html.parser")
+
+  title_tag = soup.find("h1") or soup.find("meta", property="og:title")
+  title = (
+      title_tag.get("content")
+      if title_tag and title_tag.name == "meta"
+      else (title_tag.text.strip() if title_tag else "不明")
+  )
+
+  desc_tag = soup.find(
+      "div", class_="ProductExplanation__commentArea"
+  ) or soup.find("section", class_="ProductExplanation")
+  description = desc_tag.text.strip() if desc_tag else "説明文なし"
+
+  # 現在価格の取得
+  current_price = 0
+  price_tag = (
+      soup.find("dd", class_="Price__value")
+      or soup.find("span", class_="Price__value")
+      or soup.find("p", class_="Price__value")
+  )
+
+  if price_tag:
+    price_text = price_tag.get_text()
+    # 数値のみ抽出
+    price_digits = re.sub(r"[^\d]", "", price_text)
+    if price_digits:
+      current_price = int(price_digits)
+
+  img_urls = []
+  for img in soup.find_all("img"):
+    src = img.get("src") or img.get("data-src") or ""
+    if "auctions.c.yimg.jp" in src:
+      clean_img_url = src.split("?")[0]
+      if not clean_img_url.endswith(".gif") and clean_img_url not in img_urls:
+        img_urls.append(clean_img_url)
+
+  img_urls = img_urls[:8]
+
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      )
+  }
+  images = []
+  for img_url in img_urls:
+    try:
+      res = requests.get(img_url, headers=headers, timeout=5)
+      if res.status_code == 200:
+        img = Image.open(BytesIO(res.content))
+        img.thumbnail((800, 800))
+        images.append(img)
+    except Exception:
+      continue
+
+  return title, description, images, current_price
+
 
 # ==================================================
 # 5. Gemini 3.6 Flash による目利き（503混雑対策強化）
 # ==================================================
 def analyze_watch(title, description, images):
-    prompt = f"""
+  prompt = f"""
 あなたは中古ソーラー時計の転売・仕入れ目利き専門家です。
 添付された商品画像とタイトル・商品説明文を細部まで精査し、外観ダメージ（特に風防キズ）を厳しく見極めた上で仕入れ判定を行ってください。
 
@@ -213,7 +269,7 @@ def analyze_watch(title, description, images):
 3. 仕入れ判定と上限額計算：
    - 実質仕入原価 ＝ 落札価格 ＋ 仕入れ送料(990円)
    - 利益 ＝ 販売相場 - 手数料(10%) - 販売送料(210円) - (落札価格 + 990円)
-   - 推奨落札上限額（max_bid_price_target）は、上記計算で希望利益が得られる「ヤフオクでの本体落札の上限価格」として算出してください。
+   - 推奨落札上限額（max_bid_price_target）は、上記計算で希望利益が得られる「ヤフオクでの本体落札の上限価格」として数字のみ（例: 5200）または「5200円」の形式で算出してください。
 
 出力は以下のJSON形式のみで回答してください：
 {{
@@ -231,87 +287,144 @@ def analyze_watch(title, description, images):
 【商品説明文】: {description}
 """
 
-    max_retries = 5  # リトライ回数を5回に増加
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=images + [prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1
-                )
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            if attempt < max_retries - 1:
-                # 試行ごとに10秒、20秒、30秒... と待機時間を伸ばして過負荷を回避
-                wait_time = (attempt + 1) * 10
-                print(f"  ⚠️ Gemini一時的エラー（503等）が発生しました。{wait_time}秒後に再試行します... ({attempt + 1}/{max_retries})", flush=True)
-                time.sleep(wait_time)
-            else:
-                raise e
+  max_retries = 5  # リトライ回数を5回に増加
+  for attempt in range(max_retries):
+    try:
+      response = client.models.generate_content(
+          model="gemini-3.6-flash",
+          contents=images + [prompt],
+          config=types.GenerateContentConfig(
+              response_mime_type="application/json", temperature=0.1
+          ),
+      )
+      return json.loads(response.text)
+    except Exception as e:
+      if attempt < max_retries - 1:
+        # 試行ごとに10秒、20秒、30秒... と待機時間を伸ばして過負荷を回避
+        wait_time = (attempt + 1) * 10
+        print(
+            f"  ⚠️ Gemini一時的エラー（503等）が発生しました。{wait_time}秒後に再試行します..."
+            f" ({attempt + 1}/{max_retries})",
+            flush=True,
+        )
+        time.sleep(wait_time)
+      else:
+        raise e
+
+
+def parse_price(price_val):
+  """文字列等から数値のみを抽出するヘルパー関数"""
+  if not price_val:
+    return 0
+  digits = re.sub(r"[^\d]", "", str(price_val))
+  return int(digits) if digits else 0
+
 
 # ==================================================
 # 6. メイン実行処理
 # ==================================================
 if __name__ == "__main__":
-    driver = None
-    try:
-        print("🚀 自動リサーチプログラムを起動します...", flush=True)
-        driver = create_browser()
-        
-        for store in STORES:
-            store_name = store["name"]
-            seller_id = store["id"]
-            
-            # category_id=23140 (アクセサリー、時計) 指定を追加
-            target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
-            
-            print(f"\n========================================", flush=True)
-            print(f"🏪 巡回開始: 【 {store_name} 】", flush=True)
-            print(f"========================================", flush=True)
-            
-            target_items = get_urgent_auction_urls(driver, store_name, target_search_url)
-            
-            MAX_ITEMS = 15
-            target_items = target_items[:MAX_ITEMS]
-            
-            print(f"⏰ 残り1時間未満の上位【 {len(target_items)} 件 】を厳選してチェックします。\n", flush=True)
-            
-            if not target_items:
-                print(f"【{store_name}】に該当する商品（残り1時間未満）は見つかりませんでした。", flush=True)
-                continue
-                
-            for i, item in enumerate(target_items, 1):
-                print(f"────────────────────────────────────────", flush=True)
-                print(f"[{store_name}] 【{i}/{len(target_items)}】残り時間: {item['time']} | {item['title'][:25]}...", flush=True)
-                
-                try:
-                    title, description, images = fetch_auction_details(driver, item['url'])
-                    print("🤖 Gemini 3.6 Flashで目利き試算中（風防・外観厳密チェック）...", flush=True)
-                    
-                    res = analyze_watch(title, description, images)
-                    
-                    score = res.get("condition_score", "")
-                    print(f"  └ 判定結果: {score} | 通常上限: {res.get('max_bid_price_target')} | 防衛線: {res.get('max_bid_price_break_even')}")
-                    print(f"  └ 理由/状態: {res.get('reasoning')}")
-                    
-                    if "A" in score or "B" in score:
-                        print(f"🎯 利益見込み案件を発見！Discordへ通知します。", flush=True)
-                        send_discord_notify(store_name, item, res)
-                    else:
-                        print(f"⏩ スルー（評価Cのため通知なし）", flush=True)
-                        
-                except Exception as e:
-                    print(f"❌ 解析エラー: {e}", flush=True)
-                    
-                human_sleep(3, 6)
-                
-        print("\n🎉 すべてのストアの自動処理が正常に終了しました！", flush=True)
+  driver = None
+  try:
+    print("🚀 自動リサーチプログラムを起動します...", flush=True)
+    driver = create_browser()
 
-    except Exception as e:
-        print(f"❌ 全体エラー: {e}", flush=True)
-    finally:
-        if driver:
-            driver.quit()
+    for store in STORES:
+      store_name = store["name"]
+      seller_id = store["id"]
+
+      # category_id=23140 (アクセサリー、時計) 指定を追加
+      target_search_url = (
+          f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
+      )
+
+      print("\n========================================", flush=True)
+      print(f"🏪 巡回開始: 【 {store_name} 】", flush=True)
+      print("========================================", flush=True)
+
+      target_items = get_urgent_auction_urls(
+          driver, store_name, target_search_url
+      )
+
+      MAX_ITEMS = 15
+      target_items = target_items[:MAX_ITEMS]
+
+      print(
+          f"⏰ 残り1時間未満の上位【 {len(target_items)} 件 】を厳選してチェックします。\n",
+          flush=True,
+      )
+
+      if not target_items:
+        print(
+            f"【{store_name}】に該当する商品（残り1時間未満）は見つかりませんでした。",
+            flush=True,
+        )
+        continue
+
+      for i, item in enumerate(target_items, 1):
+        print(
+            "────────────────────────────────────────",
+            flush=True,
+        )
+        print(
+            f"[{store_name}] 【{i}/{len(target_items)}】残り時間:"
+            f" {item['time']} | {item['title'][:25]}...",
+            flush=True,
+        )
+
+        try:
+          title, description, images, current_price = fetch_auction_details(
+              driver, item["url"]
+          )
+          print(
+              f"  💰 現在価格: {current_price:,}円",
+              flush=True,
+          )
+          print(
+              "🤖 Gemini 3.6 Flashで目利き試算中（風防・外観厳密チェック）...",
+              flush=True,
+          )
+
+          res = analyze_watch(title, description, images)
+
+          score = res.get("condition_score", "")
+          max_bid_raw = res.get("max_bid_price_target")
+          max_bid_num = parse_price(max_bid_raw)
+
+          print(
+              f"  └ 判定結果: {score} | 通常上限: {max_bid_raw} | 防衛線:"
+              f" {res.get('max_bid_price_break_even')}"
+          )
+          print(f"  └ 理由/状態: {res.get('reasoning')}")
+
+          # 条件チェック: AまたはB評価 かつ 現在価格 <= 推奨落札上限額
+          if "A" in score or "B" in score:
+            if current_price > 0 and max_bid_num > 0 and current_price > max_bid_num:
+              print(
+                  f"⏩ スルー（現在価格[{current_price:,}円]が推奨上限[{max_bid_num:,}円]を超えているため通知なし）",
+                  flush=True,
+              )
+            else:
+              print(
+                  "🎯 利益見込み案件を発見！Discordへ通知します。",
+                  flush=True,
+              )
+              send_discord_notify(store_name, item, res, current_price)
+          else:
+            print("⏩ スルー（評価Cのため通知なし）", flush=True)
+
+        except Exception as e:
+          print(f"❌ 解析エラー: {e}", flush=True)
+
+        human_sleep(3, 6)
+
+    print(
+        "\n🎉 すべてのストアの自動処理が正常に終了しました！",
+        flush=True,
+    )
+
+  except Exception as e:
+    print(f"❌ 全体エラー: {e}", flush=True)
+  finally:
+    if driver:
+      driver.quit()
