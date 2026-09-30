@@ -23,9 +23,9 @@ client = genai.Client(api_key=API_KEY)
 # 検索上限価格（3,000円以下）
 MAX_PRICE_LIMIT = 3000
 
-# URL（スペースを修正）
+# URL（定額側のソート指定を s1=cbids に修正）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
-URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=bids&o1=a"
+URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=cbids&o1=a"
 
 SEEN_FILE = "seen_zippo.json"
 
@@ -124,7 +124,7 @@ def send_discord_notification(item, g_result, seller_name):
 🏪 **出品者**: {seller_name}
 📌 **商品名**: {item['title']}
 💰 **現在/即決価格**: {item['price']:,}円 ({item['sale_type']})
-🏷️️ **ヒット属性**: {item['matched_keyword']}
+🏷 **ヒット属性**: {item['matched_keyword']}
 🔗 **URL**: {item['url']}
 
 💎 **素材判定**: {g_result.get('material_type', '不明')}
