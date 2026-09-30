@@ -13,7 +13,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          ref: 'master'
+          ref: master
+          path: .
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -29,7 +30,10 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python zippo_monitor.py
+        run: |
+          pwd
+          ls -la
+          python zippo_monitor.py
 
       - name: Commit and push changes (seen_zippo.json)
         run: |
