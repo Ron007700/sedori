@@ -1,37 +1,41 @@
-name: zippo monitor
+name: Run Yahoo ZIPPO Scraper
 
 on:
   schedule:
-    - cron: '*/20 8-13 * * *'
+    - cron: '23 8 * * *'   # 日本時間 17:23 (UTC 08:23)
+    - cron: '21 10 * * *'  # 日本時間 19:21 (UTC 10:21)
+    - cron: '21 11 * * *'  # 日本時間 20:21 (UTC 11:21)
+    - cron: '56 11 * * *'  # 日本時間 20:56 (UTC 11:56)
   workflow_dispatch:
 
 jobs:
-  scrape:
+  run-scraper:
     runs-on: ubuntu-latest
     steps:
-      - name: checkout code
-        uses: actions/checkout@v3
+      - name: リポジトリのチェックアウト
+        uses: actions/checkout@v4
 
-      - name: set up python
-        uses: actions/setup-python@v4
+      - name: Python環境のセットアップ
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: install dependencies
+      - name: 依存ライブラリとPlaywrightのインストール
         run: |
           python -m pip install --upgrade pip
-          pip install selenium beautifulsoup4 requests google-genai
+          pip install requests beautifulsoup4 playwright pillow google-genai
+          playwright install --with-deps chromium
 
-      - name: run zippo monitor script
+      - name: スクレイピング実行
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python zippo_monitor.py
-
-      - name: commit and push changes
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          python zippo_monitor.py
+
+      - name: 重複チェック用ファイルの自動更新・コミット
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add seen_zippo.json || true
-          git commit -m "update seen zippo ids" || exit 0
-          git push
+          git diff --staged --quiet || (git commit -m "Update seen zippo items" && git push)
