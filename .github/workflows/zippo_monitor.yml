@@ -15,12 +15,12 @@ jobs:
       - name: set up python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium beautifulsoup4 requests google-generativeai
+          pip install selenium beautifulsoup4 requests google-genai
 
       - name: run zippo monitor script
         env:
