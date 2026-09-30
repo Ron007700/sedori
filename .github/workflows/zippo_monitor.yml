@@ -22,14 +22,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium beautifulsoup4 requests google-generativeai
 
-      - name: check directory and run
+      - name: run zippo monitor script
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python zippo_monitor.py
+
+      - name: commit and push changes
         run: |
-          echo "=== CURRENT DIRECTORY ==="
-          pwd
-          echo "=== FILE LIST ==="
-          ls -la
-          echo "=== RUNNING SCRIPT ==="
-          python zippo_monitor.py
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add seen_zippo.json || true
+          git commit -m "update seen zippo ids" || exit 0
+          git push
