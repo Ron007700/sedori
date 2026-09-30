@@ -2,10 +2,9 @@ name: ZIPPO Monitor
 
 on:
   schedule:
-    # 17:00〜22:00 (JST) のピークタイムを中心に15〜30分おきに実行
-    # UTC基準: 08:00〜13:00
+    # 日本時間 17:00〜22:00 (UTC 8:00〜13:00) のピークタイムを中心に20分おきに実行
     - cron: '*/20 8-13 * * *'
-  workflow_dispatch: # 手動実行用
+  workflow_dispatch: # Actionsタブからの手動実行ボタン
 
 jobs:
   scrape:
@@ -13,11 +12,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          ref: master
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-python: '3.10'
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
@@ -30,10 +31,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python zippo_monitor.py
 
-      - name: Commit and push changes (seen_ids.json)
+      - name: Commit and push changes (seen_zippo.json)
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add seen_zippo.json
+          git add seen_zippo.json || true
           git commit -m "Update seen ZIPPO IDs" || exit 0
           git push
