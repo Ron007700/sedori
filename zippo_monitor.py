@@ -22,33 +22,24 @@ client = genai.Client(api_key=API_KEY)
 # 検索上限価格（ZIPPOの狙い目・15,000円以下）
 MAX_PRICE_LIMIT = 15000
 
-# ★ URLを修正: カテゴリ制限(auccat)を外し、ZIPPO全般から検索
-# ① オークション専用URL（最高15,000円 / 競売のみ / 残り時間の短い順）
+# URL（カテゴリ制限なし）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
-
-# ② 定額/フリマ専用URL（最高15,000円 / 定額即決のみ / 新着順）
 URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=bids&o1=a"
 
 SEEN_FILE = "seen_zippo.json"
 
-# 件数上限
-MAX_AUCTION_ITEMS = 20  # オークション上限20件
-MAX_FIXED_ITEMS = 10    # 定額上限10件
+MAX_AUCTION_ITEMS = 20
+MAX_FIXED_ITEMS = 10
 
-# ① 狙い目キーワード（素材・シリアル・限定・人気モチーフ）
 TARGET_KEYWORDS = [
-    # 素材・限定刻印
     "STERLING", "スターリング", "925", "銀製", "純銀",
     "COPPER", "カッパー", "銅", "チタン", "TITANIUM",
     "シリアル", "NUMBERED", "NO.", "限定", "LIMITED",
-    # 年代・仕様
     "1932", "1933", "1941", "レプリカ", "REPLICA", "VINTAGE", "ビンテージ", "ヴィンテージ",
     "ARMOR", "アーマー", "SLIM", "スリム",
-    # コラボ・モチーフ
     "ジブリ", "ハーレー", "HARLEY", "アニメ", "コラボ", "メタル", "貼り"
 ]
 
-# ② NGキーワード（致命的な破損・社外品）
 NG_KEYWORDS = [
     "ヒンジ破損", "ヒンジ外れ", "ヒンジ取れ",
     "蓋閉まらない", "変形大", "大きな凹み", "潰れ",
@@ -57,7 +48,7 @@ NG_KEYWORDS = [
 ]
 
 # --------------------------------------------------
-# 2. ヘルパー関数（既読管理・通知）
+# 2. ヘルパー関数
 # --------------------------------------------------
 def load_seen_items():
     if os.path.exists(SEEN_FILE):
@@ -77,7 +68,6 @@ def save_seen_items(seen):
         print(f"⚠️ 既読ファイルの保存エラー: {e}")
 
 def send_discord_notification(item, g_result, seller_name):
-    """Geminiの目利き結果を含めてDiscordへ通知"""
     if not DISCORD_WEBHOOK_URL:
         print("❌ Discord Webhook URLが未設定です")
         return
@@ -116,7 +106,7 @@ def send_discord_notification(item, g_result, seller_name):
         print(f"❌ Discord送信例外: {e}")
 
 # --------------------------------------------------
-# 3. Gemini 2.5 Flash による画像・刻印・相場解析
+# 3. Gemini 解析
 # --------------------------------------------------
 def analyze_zippo_with_gemini(title, description, images, price):
     prompt = f"""
@@ -176,7 +166,7 @@ def analyze_zippo_with_gemini(title, description, images, price):
                 return None
 
 # --------------------------------------------------
-# 4. 詳細ページ情報・画像取得
+# 4. 詳細ページ取得
 # --------------------------------------------------
 def fetch_detail_page(page, url):
     page.goto(url, wait_until="domcontentloaded", timeout=15000)
@@ -199,9 +189,9 @@ def fetch_detail_page(page, url):
             if clean_url not in img_urls and not clean_url.endswith(".gif"):
                 img_urls.append(clean_url)
                 
-    img_urls = img_urls[:5] # 底面刻印含む画像取得のため上限5枚
+    img_urls = img_urls[:5]
     
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
     images = []
     for img_url in img_urls:
         try:
@@ -216,22 +206,32 @@ def fetch_detail_page(page, url):
     return seller_name, description, images
 
 # --------------------------------------------------
-# 5. 商品処理の共通関数
+# 5. リスト取得・精査（Bot対策・描画遅延強化）
 # --------------------------------------------------
 def process_target_list(page, target_url, max_limit, sale_type_label, seen_items):
     print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
-    page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
     
-    # スクロールして要素を確実に読み込ませる
-    for _ in range(3):
-        page.evaluate("window.scrollBy(0, 1000)")
-        time.sleep(0.5)
-        
+    # 通信落ち着くまでしっかり待機
+    try:
+        page.goto(target_url, wait_until="networkidle", timeout=30000)
+    except Exception:
+        page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+    
+    # 段階的にスクロール（要素読込を誘発）
+    for i in range(1, 4):
+        page.evaluate(f"window.scrollTo(0, {i * 800});")
+        time.sleep(0.8)
+
     html = page.content()
     soup = BeautifulSoup(html, "html.parser")
     
-    # ★ 複数のセレクターに対応させて取得漏れを防止
-    items = soup.select(".Product") or soup.select("li.Product") or soup.select(".Product__item")
+    # 複数パターンで要素を探す
+    items = soup.select("li.Product") or soup.select(".Product") or soup.select("div[data-auction-id]") or soup.select("li[class*='Product']")
+    
+    # それでもダメならaタグ直探査
+    if not items:
+        items = soup.find_all("a", re.compile("Product__titleLink"))
+
     print(f"📦 検出件数: {len(items)}件（上位{max_limit}件を精査）")
 
     processed_count = 0
@@ -241,8 +241,14 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
             print(f"⏱️ 【{sale_type_label}】の上限{max_limit}件に達したため完了。")
             break
 
-        title_tag = item.select_one(".Product__titleLink") or item.select_one("a[data-auction-title]") or item.select_one("h3 a")
-        price_tag = item.select_one(".Product__priceValue") or item.select_one(".Product__price") or item.select_one("span.Price__value")
+        # タグ直探査の場合と通常のコンテナの場合に対応
+        if item.name == "a":
+            title_tag = item
+            parent = item.find_parent("li") or item.find_parent("div")
+            price_tag = parent.select_one("[class*='price'] or [class*='Price']") if parent else None
+        else:
+            title_tag = item.select_one(".Product__titleLink") or item.select_one("a[data-auction-title]") or item.find("a", class_=re.compile("title", re.I))
+            price_tag = item.select_one(".Product__priceValue") or item.select_one("[class*='price']") or item.select_one("[class*='Price']")
 
         if not (title_tag and price_tag):
             continue
@@ -250,31 +256,34 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
         title = title_tag.get_text(strip=True)
         price_raw = price_tag.get_text(strip=True)
         
-        # 数字のみ抽出
         price_digits = re.sub(r"[^\d]", "", price_raw)
         if not price_digits:
             continue
         price = int(price_digits)
 
-        # 価格上限ガード
         if price > MAX_PRICE_LIMIT:
             continue
 
         url = title_tag.get("href", "")
-        item_id = item.get("data-auction-id") or (url.split("/")[-1] if url else None)
+        
+        # ID抽出
+        item_id = item.get("data-auction-id")
+        if not item_id and url:
+            match = re.search(r'/auction/([a-zA-Z0-9]+)', url)
+            if match:
+                item_id = match.group(1)
+            else:
+                item_id = url.split("/")[-1].split("?")[0]
 
         if not item_id:
             continue
 
-        # 既読スキップ
         if item_id in seen_items:
             continue
 
-        # ① NGキーワードチェック（タイトル）
         if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
             continue
 
-        # ② ターゲットキーワードのチェック
         matched_keyword = None
         for kw in TARGET_KEYWORDS:
             if kw.lower() in title.lower():
@@ -287,7 +296,6 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
         processed_count += 1
         print(f"🎯 狙い目 [{sale_type_label} {processed_count}/{max_limit}]: [{matched_keyword}] | 価格: {price}円 | {title[:25]}...")
 
-        # ③ 詳細ページ取得＆Gemini解析
         try:
             seller_name, description, images = fetch_detail_page(page, url)
             
@@ -311,7 +319,6 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                 except Exception:
                     max_target = 0
 
-                # 赤字判定補正
                 if price >= max_target and max_target > 0:
                     print(f"  ⚠️ 赤字判定補正: 現在価格({price}円) >= 推奨上限額({max_target}円)")
                     score = "C（不可）"
@@ -319,7 +326,6 @@ def process_target_list(page, target_url, max_limit, sale_type_label, seen_items
                 print(f"  └ 最終判定: {score} | 素材: {material} | 推奨上限: {max_target}円")
                 print(f"  └ 添削理由: {g_result.get('reasoning')}")
 
-                # 判定が A または B のみ Discord通知
                 if "A" in score or "B" in score:
                     item_data = {
                         "id": item_id,
@@ -349,9 +355,15 @@ def main():
     seen_items = load_seen_items()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # headlessでもGoogle Chromeと同等のヘッダーを設定
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
+        )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+            locale="ja-JP"
         )
         page = context.new_page()
 
