@@ -38,10 +38,27 @@ SEEN_FILE = "seen_items_yahoo.json"
 # 画像取得枚数
 MAX_IMAGE_COUNT = 5
 
+# ★ リペアせどり用 必須キーワード（タイトルまたは本文に「いずれか」が含まれている必要がある）
+REPAIR_REQUIRED_KEYWORDS = [
+    "ジャンク",
+    "電池切れ",
+    "不動",
+    "未確認",
+    "動作未確認",
+]
+
 # ★ テキスト事前除外キーワード
-# （「ベゼル」「ベルト」単体は除外せず、「〜のみ」や100%パーツ・付属品と確定できるものだけを指定して取り逃しを防止）
+# (パーツ単体・付属品に加え、「すでに稼働・電池交換済み」の利益が出ない商品を即スキップ)
 NG_KEYWORDS = [
-    # 印刷物・箱
+    # --- 稼働品・メンテ済み（リペアの伸び代がないため除外） ---
+    "電池交換済み",
+    "電池交換済",
+    "新品電池",
+    "稼働品",
+    "動作品",
+    "動作確認済み",
+    "動作確認済",
+    # --- 印刷物・箱 ---
     "カタログ",
     "雑誌",
     "BOOK",
@@ -53,7 +70,7 @@ NG_KEYWORDS = [
     "空箱",
     "空き箱",
     "化粧箱のみ",
-    # 確実に本体を含まないパーツ・周辺機器類
+    # --- 確実に本体を含まないパーツ・周辺機器類 ---
     "Oリング",
     "パッキン",
     "保護フィルム",
@@ -65,7 +82,7 @@ NG_KEYWORDS = [
     "余り駒",
     "ベゼルのみ",
     "ベルトのみ",
-    "バンドのみ",  # 「〜のみ」が明記されている場合のみ即スキップ
+    "バンドのみ",
     "裏蓋ネジ",
     "バネ棒",
     "遊環のみ",
@@ -107,7 +124,7 @@ def send_discord_notification(item, g_result, seller_name):
   )
 
   message = f"""
-🚨 **【ヤフオク】仕入れ候補 G-SHOCK 発見！** 🚨
+🔧 **【ヤフオク】リペア仕入れ候補 G-SHOCK 発見！** 🔧
 ----------------------------------------
 🏪 **出品者/ストア**: {seller_name}
 📌 **商品名**: {item['title']}
@@ -120,9 +137,9 @@ def send_discord_notification(item, g_result, seller_name):
 📊 **総合評価**: **{g_result.get('condition_score', '-')}**
 🏷 **状態・注記フラグ**: {risk_text}
 
-💵 **想定売価**: {g_result.get('estimated_resale_normal', '-')}円
+💵 **想定売価（稼働化時）**: {g_result.get('estimated_resale_normal', '-')}円
 🎯 **推奨落札/購入上限額**: **{g_result.get('max_bid_price_target', '-')}円**
-💡 **目利き添削・状態感**: {g_result.get('reasoning', '-')}
+💡 **目利き添削・リペア見込み**: {g_result.get('reasoning', '-')}
 ----------------------------------------
 """
   payload = {"content": message}
@@ -145,7 +162,7 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini 解析処理
+# 3. Gemini 解析処理（リペア目利き特化プロンプト）
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
   if not client:
@@ -153,39 +170,39 @@ def analyze_gshock_with_gemini(title, description, images, price):
     return None
 
   prompt = f"""
-あなたはG-SHOCKおよびブランドウォッチの転売・仕入れ目利き専門家です。
-添付された商品画像（最大5枚）と商品タイトル・説明文を詳細に添削・解析し、仕入れ判定を行ってください。
+あなたはG-SHOCKおよびブランドウォッチのリペア転売（電池交換・簡易補修・清掃）の専門家です。
+添付された商品画像（最大5枚）と商品タイトル・説明文を分析し、リペア仕入れとしての適正を判定してください。
 
 【最優先の画像判別ルール】
 - 添付画像を厳密に視覚確認してください。
-- 腕時計本体（文字盤・ケース・モジュールが存在するもの）が含まれず、「ベゼル単体」「ベルト/バンド単体」「プロテクター単体」「アダプター単体」「コマのみ」「空箱/ケースのみ」などの部品・周辺パーツのみの出品であると画像で判断できる場合は、理由を問わず即座に condition_score を「C（不可）」にしてください。
-- 時計本体が出品されており、おまけや交換パーツとしてベゼル等が付属している場合は問題ありません。
+- 腕時計本体（文字盤・ケース・モジュールが存在するもの）が含まれず、「ベゼル単体」「ベルト/バンド単体」「パーツのみ」の出品である場合は理由を問わず即座に condition_score を「C（不可）」にしてください。
 
-【その他の査定方針】
-- 「電池切れ」「動作未確認」「ジャンク扱い」であっても、モジュール死の可能性が低く電池交換で稼働が見込める本体は前向きに評価してください。
-- 社外パーツ（社外メタルベゼル等）やMOD品、偽物の疑いがある場合は判定を「C（不可）」にしてください。
+【リペア目利きの評価基準】
+- 本商品は「ジャンク扱い」または「電池切れ/動作未確認」として安く出品されているものです。
+- 液漏れ・モジュール腐食・液晶漏れ・裏蓋ネジ舐めなどの致命的なダメージがなく、電池交換や清掃で正常稼働品として再販できる可能性が高いか査定してください。
+- 社外パーツ（MOD品）や偽物の疑いがある場合は判定を「C（不可）」にしてください。
 
-【メンテコスト計算の基準】
+【メンテ・リペアコスト計算】
 - 手数料10%、送料梱包代450円、仕入れ送料990円を一律コストとします。
-- 電池/メンテナンス費用:
-  ・通常の電池式（クォーツ）モデル: 200円
-  ・タフソーラー / 電波ソーラーモデル: 二次電池交換代として【 1,200円 】で計算してください。
+- リペア費用:
+  ・通常の電池式（クォーツ）モデル: 200円（電池代＋パッキングリス）
+  ・タフソーラー / 電波ソーラーモデル: 二次電池代として【 1,200円 】で計算してください。
 
 【利益判定】
 - 現在の出品価格は【 {price} 円 】です。
-- 上記コストを引いた上で推奨仕入れ上限額（max_bid_price_target）を算出してください。
-- 現在価格（{price}円）が推奨上限額を超えている場合、または利益が出ない（赤字）場合は「C（不可）」と判定してください。
+- リペア後に「正常稼働品」として売却できる想定価格（estimated_resale_normal）を算出し、上記コストを差し引いた推奨落札上限額（max_bid_price_target）を提示してください。
+- 現在価格（{price}円）が推奨上限額を超えている、またはリペアしても利益が出ない場合は「C（不可）」にしてください。
 
 以下のJSON形式でのみ回答してください：
 {{
   "brand": "CASIO",
-  "model": "型番（例: DW-6900B-9 / GW-M5610等）",
+  "model": "型番（例: DW-5600E / GW-M5610等）",
   "authenticity_status": "純正品 / 社外パーツあり / 偽物・MODの疑い / パーツのみ出品",
-  "risk_flags": ["パーツ単体出品", "電池切れ疑い", "ソーラー機（二次電池想定）", "外観小傷あり", "純正パーツ" などの状態フラグ],
+  "risk_flags": ["電池切れ（復活濃厚）", "ソーラー二次電池要交換", "外観小傷あり", "液晶漏れ懸念" などの状態フラグ],
   "condition_score": "A（推奨） / B（慎重） / C（不可）",
   "estimated_resale_normal": 8500,
   "max_bid_price_target": 5500,
-  "reasoning": "画像判定理由（パーツ単体か本体か）・真贋・稼働見込みの添削（100文字以内）"
+  "reasoning": "リペア・電池交換での復活見込みと目利き判断（100文字以内）"
 }}
 
 【商品タイトル】: {title}
@@ -273,7 +290,7 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 def process_auction_list(page, target_url, sale_type_label, seen_items):
   print(
-      f"\n🔍 一覧ページ取得中 (腕時計カテゴリ・上限8000円・終了間近"
+      f"\n🔍 一覧ページ取得中 (腕時計・8000円以下・終了間近"
       f" 上位50件):\n {target_url}",
       flush=True,
   )
@@ -308,11 +325,9 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     print("⚠️ 商品要素が見つかりませんでした。", flush=True)
     return
 
-  # 上位50件に制限
   items = items[:50]
-
   print(
-      f"📦 取得完了: 上位{len(items)}件一覧から「5分〜59分」の対象を抽出します...",
+      f"📦 取得完了: 上位{len(items)}件からリペア対象（ジャンク・電池切れ等）をフィルタリングします...",
       flush=True,
   )
 
@@ -337,8 +352,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     if not title:
       continue
 
-    # ★ タイトルによるパーツ単体（100%パーツ確実なもの）の高速フィルタリング
-    # 型番＋「 用」の並び（例: GWG-100 用）や完全NG単語を検知
+    # 1. 稼働品・パーツ単体などのNGキーワードがあれば即スキップ
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS) or re.search(
         r"[A-Z0-9\-]+\s*用", title
     ):
@@ -361,7 +375,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     if not item_id or item_id in seen_items:
       continue
 
-    # 残り時間判定
+    # 残り時間判定（5分〜59分）
     time_tag = item.select_one(".Product__time") or item.select_one(
         "[class*='time']"
     )
@@ -380,7 +394,6 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       if min_match:
         minutes_left = int(min_match.group(1))
 
-    # 残り「5分〜59分」のみ抽出
     if minutes_left is None or not (5 <= minutes_left <= 59):
       continue
 
@@ -393,24 +406,37 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     })
 
   print(
-      f"🎯 抽出成功: 該当商品 {len(target_items)}件（詳細解析します）",
+      f"🎯 抽出成功: 該当商品 {len(target_items)}件（詳細取得＆リペア判定へ移行）",
       flush=True,
   )
 
-  # --- 【第2段階】抽出された本命商品のみ詳細取得 ＆ Gemini判定 ---
+  # --- 【第2段階】抽出された商品のみ詳細取得 ＆ Gemini判定 ---
   for idx, target in enumerate(target_items, 1):
     print(
-        f"\n[{idx}/{len(target_items)}] 🎯 解析中: 残り{target['time_left']} |"
-        f" 価格: {target['price']}円 | {target['title'][:30]}...",
+        f"\n[{idx}/{len(target_items)}] 🎯 詳細確認中: 残り{target['time_left']}"
+        f" | 価格: {target['price']}円 | {target['title'][:30]}...",
         flush=True,
     )
 
     try:
       seller_name, description, images = fetch_detail_page(page, target["url"])
+      full_text = f"{target['title']} {description}".lower()
 
-      # 詳細本文に明確な「〜のみ」系キーワードがあれば念のためスキップ
-      text_to_check = f"{target['title']} {description}".lower()
-      found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
+      # ★ リペア必須キーワードチェック（タイトルか本文に「ジャンク」「電池切れ」等の記載が必要）
+      has_required_kw = any(
+          req.lower() in full_text for req in REPAIR_REQUIRED_KEYWORDS
+      )
+      if not has_required_kw:
+        print(
+            "  ⏩ リペア必須キーワード（ジャンク/電池切れ等）がないためスキップ",
+            flush=True,
+        )
+        seen_items.add(target["id"])
+        save_seen_items(seen_items)
+        continue
+
+      # ★ 本文側でも稼働品・電池交換済み・パーツ単体キーワードを再チェック
+      found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in full_text]
       if found_ng:
         print(
             f"  ⏩ 本文NGワード検出のためスキップ: {', '.join(found_ng)}",
@@ -421,7 +447,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
         continue
 
       print(
-          f"🤖 Geminiで画像・目利き判定中 (画像{len(images)}枚)...",
+          f"🤖 Geminiで画像・リペア目利き判定中 (画像{len(images)}枚)...",
           flush=True,
       )
       g_result = analyze_gshock_with_gemini(
@@ -450,7 +476,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
           score = "C（不可）"
 
         print(
-            f"  └ 最終判定: {score} | 状態/種別: {auth} | 推奨上限:"
+            f"  └ 最終判定: {score} | 状態/種別: {auth} | 推奨仕入れ上限:"
             f" {max_target}円",
             flush=True,
         )
@@ -467,7 +493,10 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
           }
           send_discord_notification(item_data, g_result, seller_name)
         else:
-          print("  ⏩ スルー（パーツ単体/利益なし/社外品/偽物疑い）", flush=True)
+          print(
+              "  ⏩ スルー（パーツ単体/復活困難/赤字/社外品疑い）",
+              flush=True,
+          )
 
       seen_items.add(target["id"])
       save_seen_items(seen_items)
@@ -483,7 +512,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（パーツ判定最適化・上位50件版）を開始します...",
+      "🚀 ヤフオク G-SHOCKリペアせどり専用スクレイパーを開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
