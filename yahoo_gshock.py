@@ -27,37 +27,32 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 価格上限設定
 MAX_PRICE_LIMIT = 8000
 
-# ★ price_type=currentprice&max=8000 (現在価格8,000円以下) × 終了が近い順 (s1=end, o1=a) × 100件一括取得
+# ★ カテゴリをG-SHOCK本体(2084200000)に限定 ＆ 現在価格上限8,000円
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
-    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
+    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=2084200000&is_auction=1&s1=end&o1=a&n=100"
 )
 
 SEEN_FILE = "seen_items_yahoo.json"
 
-# 画像は目利き精度重視でしっかり5枚取得
+# 画像取得枚数（目利き精度のため5枚）
 MAX_IMAGE_COUNT = 5
 
+# ★ テキスト側での除外は「本・カタログ・空箱」のみに最小化（取り逃し防止）
+# パーツ類（ベゼル/ベルト等）は画像解析（Gemini）で判定します。
 NG_KEYWORDS = [
-    "加水分解",
-    "割れ",
-    "ベタつき",
-    "ベタツキ",
-    "ベゼル欠品",
-    "ベゼル破損",
-    "ベゼル割れ",
-    "ベゼル不良",
-    "遊環なし",
-    "遊環欠品",
-    "リング欠損",
-    "ガラス傷",
-    "ガラスキズ",
-    "風防欠け",
-    "風防傷",
-    "黄ばみ",
-    "色あせ",
-    "変色",
-    "日焼け",
+    # 書籍・カタログ・空箱
+    "カタログ",
+    "雑誌",
+    "BOOK",
+    "Book",
+    "book",
+    "取扱説明書",
+    "取説",
+    "マニュアル",
+    "空箱",
+    "空き箱",
+    "化粧箱のみ",
 ]
 
 
@@ -133,7 +128,7 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini 解析処理
+# 3. Gemini 解析処理（画像によるパーツ除外を最優先設定）
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
   if not client:
@@ -142,11 +137,16 @@ def analyze_gshock_with_gemini(title, description, images, price):
 
   prompt = f"""
 あなたはG-SHOCKおよびブランドウォッチの転売・仕入れ目利き専門家です。
-添付された商品画像（最大5枚）と商品タイトル・説明文を詳細に添削・解析し、社外品や偽物を排除した上で、電池交換や清掃を行って利益が見込めるか仕入れ判定を行ってください。
+添付された商品画像（最大5枚）と商品タイトル・説明文を詳細に添削・解析し、仕入れ判定を行ってください。
 
-【査定方針】
-- 「電池切れ」「動作未確認」「ジャンク扱い」であっても、モジュール死の可能性が低く電池交換で稼働が見込める場合は前向きに評価してください。
-- ただし、社外パーツ（メタルベゼル等）やMOD品、偽物の疑いがある場合は判定を「C（不可）」にしてください。
+【最優先の画像判別ルール】
+- 添付画像を厳密に視覚確認してください。
+- 腕時計本体（文字盤・ケース・モジュールが存在するもの）が含まれず、**「ベゼル単体」「ベルト/バンド単体」「プロテクター単体」「アダプター単体」「コマのみ」「空箱/ケースのみ」などの部品・周辺パーツのみの出品であると画像で判断できる場合は、理由を問わず即座に condition_score を「C（不可）」** にしてください。
+- 時計本体が出品されており、おまけや交換パーツとしてベゼル等が付属している場合は問題ありません。
+
+【その他の査定方針】
+- 「電池切れ」「動作未確認」「ジャンク扱い」であっても、モジュール死の可能性が低く電池交換で稼働が見込める本体は前向きに評価してください。
+- 社外パーツ（社外メタルベゼル等）やMOD品、偽物の疑いがある場合は判定を「C（不可）」にしてください。
 
 【メンテコスト計算の基準】
 - 手数料10%、送料梱包代450円、仕入れ送料990円を一律コストとします。
@@ -163,12 +163,12 @@ def analyze_gshock_with_gemini(title, description, images, price):
 {{
   "brand": "CASIO",
   "model": "型番（例: DW-6900B-9 / GW-M5610等）",
-  "authenticity_status": "純正品 / 社外パーツあり / 偽物・MODの疑い",
-  "risk_flags": ["電池切れ疑い", "ソーラー機（二次電池想定）", "外観小傷あり", "純正パーツ" などの状態フラグ],
+  "authenticity_status": "純正品 / 社外パーツあり / 偽物・MODの疑い / パーツのみ出品",
+  "risk_flags": ["パーツ単体出品", "電池切れ疑い", "ソーラー機（二次電池想定）", "外観小傷あり", "純正パーツ" などの状態フラグ],
   "condition_score": "A（推奨） / B（慎重） / C（不可）",
   "estimated_resale_normal": 8500,
   "max_bid_price_target": 5500,
-  "reasoning": "電池交換稼働見込み・真贋・外観状態の添削理由（100文字以内）"
+  "reasoning": "画像判定理由（パーツ単体か本体か）・真贋・稼働見込みの添削（100文字以内）"
 }}
 
 【商品タイトル】: {title}
@@ -230,7 +230,6 @@ def fetch_detail_page(page, url):
       if clean_url not in img_urls and not clean_url.endswith(".gif"):
         img_urls.append(clean_url)
 
-  # 画像はしっかり5枚取得
   img_urls = img_urls[:MAX_IMAGE_COUNT]
 
   headers = {
@@ -257,7 +256,7 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 def process_auction_list(page, target_url, sale_type_label, seen_items):
   print(
-      f"\n🔍 一覧ページ取得中 (price_type=currentprice&max=8000上限・終了が近い順"
+      f"\n🔍 一覧ページ取得中 (G-SHOCKカテゴリ限定・上限8000円・終了間近"
       f" 100件):\n {target_url}",
       flush=True,
   )
@@ -301,7 +300,6 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       continue
     price = int(price_digits)
 
-    # 念のためプログラム側でも8,000円以下を厳格チェック
     if price > MAX_PRICE_LIMIT:
       continue
 
@@ -314,6 +312,10 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     if item_id in seen_items:
       continue
 
+    # タイトルの書籍・箱NGチェックのみ（パーツ類は通過させて画像解析へ回す）
+    if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
+      continue
+
     # 残り時間判定
     time_tag = item.select_one(".Product__time") or item.select_one(
         "[class*='time']"
@@ -324,7 +326,6 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
         else item.get_text(" ", strip=True)
     )
 
-    # 「日」や「時間」が含まれる場合は1時間以上確定なのでスルー
     if "日" in time_text or "時間" in time_text:
       continue
 
@@ -334,12 +335,8 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       if min_match:
         minutes_left = int(min_match.group(1))
 
-    # ★ 残り「5分〜59分」のみ抽出
+    # 残り「5分〜59分」のみ抽出
     if minutes_left is None or not (5 <= minutes_left <= 59):
-      continue
-
-    # タイトルの物理NGチェック
-    if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
     target_items.append({
@@ -351,7 +348,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     })
 
   print(
-      f"🎯 抽出成功: 該当商品 {len(target_items)}件（この商品のみ詳細解析します）",
+      f"🎯 抽出成功: 該当商品 {len(target_items)}件（画像判定を含めて詳細解析します）",
       flush=True,
   )
 
@@ -378,7 +375,8 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
         continue
 
       print(
-          f"🤖 Geminiで目利き試算中 (画像{len(images)}枚)...", flush=True
+          f"🤖 Geminiで画像・目利き判定中 (画像{len(images)}枚)...",
+          flush=True,
       )
       g_result = analyze_gshock_with_gemini(
           target["title"], description, images, target["price"]
@@ -406,11 +404,11 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
           score = "C（不可）"
 
         print(
-            f"  └ 最終判定: {score} | 純正性: {auth} | 推奨上限:"
+            f"  └ 最終判定: {score} | 状態/種別: {auth} | 推奨上限:"
             f" {max_target}円",
             flush=True,
         )
-        print(f"  └ 添削理由: {g_result.get('reasoning')}", flush=True)
+        print(f"  └ 理由: {g_result.get('reasoning')}", flush=True)
 
         if "A" in score or "B" in score:
           item_data = {
@@ -423,7 +421,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
           }
           send_discord_notification(item_data, g_result, seller_name)
         else:
-          print("  ⏩ スルー（利益なし/社外品/偽物疑い）", flush=True)
+          print("  ⏩ スルー（パーツ単体/利益なし/社外品/偽物疑い）", flush=True)
 
       seen_items.add(target["id"])
       save_seen_items(seen_items)
@@ -439,7 +437,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（8,000円上限・5〜59分抽出・5枚解析版）を開始します...",
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（取り逃し防止・画像Visual識別強化版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
