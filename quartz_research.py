@@ -276,7 +276,7 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. リスト取得・精査（残り10分〜59分判定）
+# 5. リスト取得・精査（残り10分〜59分判定の改善版）
 # --------------------------------------------------
 def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
@@ -311,7 +311,7 @@ def process_auction_list(
 
   for item in items:
     if processed_count >= max_limit:
-      print(f"⏱️ 上限{max_limit}件に達したため完了。")
+      print(f"⏱️️ 上限{max_limit}件に達したため完了。")
       break
 
     if item.name == "a":
@@ -319,6 +319,11 @@ def process_auction_list(
       parent = item.find_parent("li") or item.find_parent("div")
       price_tag = (
           parent.select_one("[class*='price'] or [class*='Price']")
+          if parent
+          else None
+      )
+      time_tag = (
+          parent.select_one("[class*='time'] or [class*='Time']")
           if parent
           else None
       )
@@ -332,6 +337,9 @@ def process_auction_list(
           item.select_one(".Product__priceValue")
           or item.select_one("[class*='price']")
           or item.select_one("[class*='Price']")
+      )
+      time_tag = item.select_one(".Product__time") or item.select_one(
+          "[class*='time']"
       )
 
     if not (title_tag and price_tag):
@@ -361,12 +369,21 @@ def process_auction_list(
     if not item_id or item_id in seen_items:
       continue
 
-    # 残り時間判定（10分〜59分以内）
-    item_text = item.get_text(" ", strip=True)
-    if "日" in item_text or "時間" in item_text:
+    # --------------------------------------------------
+    # 残り時間判定（ピンポイント取得）
+    # --------------------------------------------------
+    time_text = (
+        time_tag.get_text(strip=True)
+        if time_tag
+        else item.get_text(" ", strip=True)
+    )
+
+    # 「日」や「時間」が含まれている場合はスキップ（1時間以上残っている）
+    if "日" in time_text or "時間" in time_text:
       continue
 
-    min_match = re.search(r"(\d+)分", item_text)
+    # 「分」の数字を抽出
+    min_match = re.search(r"(\d+)\s*分", time_text)
     if not min_match:
       continue
 
