@@ -27,10 +27,10 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 価格上限設定
 MAX_PRICE_LIMIT = 8000
 
-# 8,000円以下 × 終了が近い順 (s1=end, o1=a) × 100件一括取得
+# ★ aucmax=8000 (8,000円以下) × 終了が近い順 (s1=end, o1=a) × 100件一括取得
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
-    f"p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
+    f"p=G-SHOCK&aucmax={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
 )
 
 SEEN_FILE = "seen_items_yahoo.json"
@@ -256,7 +256,11 @@ def fetch_detail_page(page, url):
 # 5. 一覧抽出 ＆ ピンポイント解析処理
 # --------------------------------------------------
 def process_auction_list(page, target_url, sale_type_label, seen_items):
-  print(f"\n🔍 一覧ページ取得中 (8,000円以下・終了が近い順 100件): {target_url}", flush=True)
+  print(
+      f"\n🔍 一覧ページ取得中 (aucmax=8000上限・終了が近い順 100件):"
+      f" {target_url}",
+      flush=True,
+  )
 
   try:
     page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
@@ -435,7 +439,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（8,000円以下・5〜59分抽出・5枚解析版）を開始します...",
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（8,000円上限・5〜59分抽出・5枚解析版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
