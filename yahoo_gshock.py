@@ -27,7 +27,7 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 価格上限設定
 MAX_PRICE_LIMIT = 8000
 
-# ★ カテゴリ「23140（腕時計）」、現在価格上限8,000円、終了順指定、取得件数を上位50件(n=50)に設定
+# ★ カテゴリ「23140（腕時計）」、現在価格上限8,000円、終了順指定、上位50件(n=50)
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
     f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=50"
@@ -35,11 +35,13 @@ URL_AUCTION = (
 
 SEEN_FILE = "seen_items_yahoo.json"
 
-# 画像取得枚数（目利き精度のため5枚）
+# 画像取得枚数
 MAX_IMAGE_COUNT = 5
 
-# ★ テキスト除外は「本・カタログ・空箱」のみ（取り逃し防止）
+# ★ テキスト事前除外キーワード
+# （「ベゼル」「ベルト」単体は除外せず、「〜のみ」や100%パーツ・付属品と確定できるものだけを指定して取り逃しを防止）
 NG_KEYWORDS = [
+    # 印刷物・箱
     "カタログ",
     "雑誌",
     "BOOK",
@@ -51,6 +53,23 @@ NG_KEYWORDS = [
     "空箱",
     "空き箱",
     "化粧箱のみ",
+    # 確実に本体を含まないパーツ・周辺機器類
+    "Oリング",
+    "パッキン",
+    "保護フィルム",
+    "ガラスフィルム",
+    "プロテクターのみ",
+    "あまりコマ",
+    "余りコマ",
+    "あまり駒",
+    "余り駒",
+    "ベゼルのみ",
+    "ベルトのみ",
+    "バンドのみ",  # 「〜のみ」が明記されている場合のみ即スキップ
+    "裏蓋ネジ",
+    "バネ棒",
+    "遊環のみ",
+    "ディスプレイスタンド",
 ]
 
 
@@ -318,6 +337,13 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     if not title:
       continue
 
+    # ★ タイトルによるパーツ単体（100%パーツ確実なもの）の高速フィルタリング
+    # 型番＋「 用」の並び（例: GWG-100 用）や完全NG単語を検知
+    if any(ng.lower() in title.lower() for ng in NG_KEYWORDS) or re.search(
+        r"[A-Z0-9\-]+\s*用", title
+    ):
+      continue
+
     price_digits = re.sub(r"[^\d]", "", price_tag.get_text(strip=True))
     if not price_digits:
       continue
@@ -333,10 +359,6 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       item_id = match.group(1) if match else url
 
     if not item_id or item_id in seen_items:
-      continue
-
-    # 書籍・箱などの完全NGチェック
-    if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
     # 残り時間判定
@@ -386,6 +408,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     try:
       seller_name, description, images = fetch_detail_page(page, target["url"])
 
+      # 詳細本文に明確な「〜のみ」系キーワードがあれば念のためスキップ
       text_to_check = f"{target['title']} {description}".lower()
       found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
       if found_ng:
@@ -460,7 +483,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（上位50件・残り5〜59分抽出版）を開始します...",
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（パーツ判定最適化・上位50件版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
