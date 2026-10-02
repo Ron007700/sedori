@@ -7,6 +7,7 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from PIL import Image
 from playwright.sync_api import sync_playwright
 import requests
@@ -17,7 +18,8 @@ import requests
 API_KEY = os.environ.get("GEMINI_API_KEY")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-client = genai.Client(api_key=API_KEY)
+# APIキー未設定時でもクラッシュしない安全化
+client = genai.Client(api_key=API_KEY) if API_KEY else None
 
 # 巡回対象のストアリスト（全4店舗）
 STORES = [
@@ -30,7 +32,6 @@ SEARCH_KEYWORD = "ソーラー"
 EXCLUDE_KEYWORDS = ["ELGIN", "Elgin", "elgin", "エルジン"]
 
 SEEN_FILE = "seen_solar.json"
-MAX_ITEMS_PER_STORE = 20  # ヤフオク最大20件
 
 
 # ==================================================
@@ -42,7 +43,7 @@ def load_seen_items():
       with open(SEEN_FILE, "r", encoding="utf-8") as f:
         return set(json.load(f))
     except Exception as e:
-      print(f"⚠️ 既読ファイルの読み込みエラー: {e}")
+      print(f"⚠️️ 既読ファイルの読み込みエラー: {e}")
       return set()
   return set()
 
@@ -105,7 +106,7 @@ def send_discord_notify(store_name, item, result, current_price=0):
 
 
 # ==================================================
-# 3. リスト取得（ヤフオク限定・残り10分〜1時間以内）
+# 3. リスト取得（ヤフオク限定・残り10分〜59分前・全件取得）
 # ==================================================
 def get_urgent_auction_urls(page, store_name, search_url, seen_items):
   print(
@@ -145,10 +146,12 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
       if "日" in parent_text or "時間" in parent_text:
         continue
 
-      # 残り「分」を取得し、10分以上60分未満かチェック
+      # 残り「分」を取得し、10分以上60分未満（10〜59分）かチェック
       min_match = re.search(r"(\d+)分", parent_text)
       if min_match:
         minutes_left = int(min_match.group(1))
+
+        # ★ 残り10分〜59分前のみを抽出対象にする（10分未満・60分以上は除外）
         if 10 <= minutes_left < 60:
           time_str = f"{minutes_left}分"
 
@@ -236,9 +239,13 @@ def fetch_auction_details(page, url):
 
 
 # ==================================================
-# 5. Gemini 3.6 Flash 解析
+# 5. Gemini 3.8 Flash 解析
 # ==================================================
 def analyze_watch(title, description, images):
+  if not client:
+    print("❌ Gemini APIキーが読み込めていません")
+    return None
+
   prompt = f"""
 あなたは中古ソーラー時計の転売・仕入れ目利き専門家です。
 添付された商品画像とタイトル・商品説明文を細部まで精査し、外観ダメージ（特に風防キズ）および二次電池（ソーラー充電）の状態を厳しく見極めた上で仕入れ判定を行ってください。
@@ -277,29 +284,29 @@ def analyze_watch(title, description, images):
 【商品説明文】: {description}
 """
 
-  max_retries = 3
-  for attempt in range(max_retries):
-    try:
-      response = client.models.generate_content(
-          model="gemini-3.6-flash",
-          contents=images + [prompt],
-          config=types.GenerateContentConfig(
-              response_mime_type="application/json", temperature=0.1
-          ),
+  try:
+    response = client.models.generate_content(
+        model="gemini-3.8-flash",
+        contents=images + [prompt],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", temperature=0.1
+        ),
+    )
+    return json.loads(response.text)
+
+  except APIError as e:
+    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+      print(
+          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。"
       )
-      return json.loads(response.text)
-    except Exception as e:
-      if attempt < max_retries - 1:
-        wait_time = (attempt + 1) * 3
-        print(
-            f"  ⚠️ Gemini一時的エラー。{wait_time}秒後に再試行します..."
-            f" ({attempt + 1}/{max_retries})",
-            flush=True,
-        )
-        time.sleep(wait_time)
-      else:
-        print(f"❌ Gemini解析失敗: {e}")
-        return None
+      print("   以降の解析を中断し、スクリプトを安全に終了します。")
+      return "QUOTA_EXCEEDED"
+    else:
+      print(f"❌ Gemini APIエラー: {e}")
+      return None
+  except Exception as e:
+    print(f"❌ Gemini解析例外: {e}")
+    return None
 
 
 # ==================================================
@@ -307,7 +314,7 @@ def analyze_watch(title, description, images):
 # ==================================================
 def main():
   print(
-      "🚀 ヤフオク ソーラー時計仕入れリサーチ（Playwright + Gemini 3.6"
+      "🚀 ヤフオク ソーラー時計仕入れリサーチ（Playwright + Gemini 3.8"
       " Flash）を開始します...",
       flush=True,
   )
@@ -337,27 +344,25 @@ def main():
       seller_id = store["id"]
 
       # is_auction=1 (ヤフオクのオークション形式限定)
-      target_search_url = (
-          f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
-      )
+      target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
 
       print("\n========================================", flush=True)
       print(f"🏪 巡回開始: 【 {store_name} 】", flush=True)
       print("========================================", flush=True)
 
+      # 該当する全件を取得（件数による切り捨て上限なし）
       target_items = get_urgent_auction_urls(
           page, store_name, target_search_url, seen_items
       )
-      target_items = target_items[:MAX_ITEMS_PER_STORE]
 
       print(
-          f"⏰ 残り10分〜1時間未満の上位【 {len(target_items)} 件 】を厳選してチェックします。\n",
+          f"⏰ 残り10分〜59分前の対象商品【 {len(target_items)} 件 】を全件チェックします。\n",
           flush=True,
       )
 
       if not target_items:
         print(
-            f"【{store_name}】に該当する未チェック商品（残り10分〜1時間未満）は見つかりませんでした。",
+            f"【{store_name}】に該当する未チェック商品（残り10分〜59分前）は見つかりませんでした。",
             flush=True,
         )
         continue
@@ -376,11 +381,15 @@ def main():
           )
           print(f"  💰 現在価格: {current_price:,}円", flush=True)
           print(
-              "🤖 Gemini 3.6 Flashで目利き試算中（風防・外観厳密チェック）...",
+              "🤖 Gemini 3.8 Flashで目利き試算中（風防・外観厳密チェック）...",
               flush=True,
           )
 
           g_result = analyze_watch(title, description, images)
+
+          if g_result == "QUOTA_EXCEEDED":
+            print("⛔ API制限に達したため処理を安全に停止します。")
+            break
 
           if g_result:
             score = g_result.get("condition_score", "")
