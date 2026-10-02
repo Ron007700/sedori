@@ -20,49 +20,13 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
-# 検索上限価格
 MAX_PRICE_LIMIT = 8000
-
-# ★ 変更: 件数を n=100 に拡大
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
 
 SEEN_FILE = "seen_items_yahoo.json"
-MAX_AUCTION_ITEMS = 100  # ★ 変更: 精査件数上限を100件へ
+MAX_AUCTION_ITEMS = 100
 
-# 狙い目キーワード（「ソーラー」を除外し、コラボ・カラー・希少型番等を指定）
-TARGET_KEYWORDS = [
-    "TWIN SENSOR",
-    "TRIPLE SENSOR",
-    "ALTI",
-    "SURF",
-    "オレンジ",
-    "ピンク",
-    "ネイビー",
-    "グリーン",
-    "イエロー",
-    "迷彩",
-    "カモフラ",
-    "マーブル",
-    "グラデーション",
-    "フロッグマン",
-    "FROGMAN",
-    "マッドマン",
-    "ガルフマン",
-    "レイズマン",
-    "スカイフォース",
-    "DW-6700",
-    "DW-002",
-    "DW-003",
-    "DW-004",
-    "DW-8800",
-    "DW-9000",
-    "ラバーズコレクション",
-    "ラバコレ",
-    "イルクジ",
-    "コラボ",
-]
-
-# NGキーワード（「ジャンク・不動・未確認・充電不足」を除外し、致命的な物理破損のみ指定）
+# ★ 物理的破損・再生不能な状態のみ弾くNGリスト
 NG_KEYWORDS = [
     "加水分解",
     "割れ",
@@ -87,7 +51,7 @@ NG_KEYWORDS = [
 
 
 # --------------------------------------------------
-# 2. ヘルパー関数（既読管理・通知）
+# 2. ヘルパー関数
 # --------------------------------------------------
 def load_seen_items():
   if os.path.exists(SEEN_FILE):
@@ -126,7 +90,6 @@ def send_discord_notification(item, g_result, seller_name):
 📌 **商品名**: {item['title']}
 💰 **現在価格**: {item['price']:,}円 ({item['sale_type']})
 ⏰ **残り時間**: {item['time_left']}
-🏷️ **ヒット属性**: {item['matched_keyword']}
 🔗 **URL**: {item['url']}
 
 🏷️ **モデル特定**: {g_result.get('brand', 'CASIO')} / {g_result.get('model', '不明')}
@@ -157,7 +120,7 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini による画像添削・真贋・相場推論
+# 3. Gemini 解析（二次電池コスト判定込み）
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
   if not client:
@@ -272,7 +235,7 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. 商品処理のメイン関数（10分〜3時間判定）
+# 5. メイン処理（キーワード絞り込みを排除）
 # --------------------------------------------------
 def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
@@ -330,7 +293,7 @@ def process_auction_list(
     if item_id in seen_items:
       continue
 
-    # 残り時間チェック（10分〜3時間 以内か判定）
+    # 時間チェック（10分〜3時間）
     time_tag = item.select_one(".Product__time") or item.select_one(
         "[class*='time']"
     )
@@ -370,25 +333,15 @@ def process_auction_list(
         else f"{minutes_left}分"
     )
 
-    # NGキーワードチェック（タイトル）
+    # タイトルの物理NGチェック（加水分解など）
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
-    # ターゲットキーワードチェック
-    matched_keyword = None
-    for kw in TARGET_KEYWORDS:
-      if kw.lower() in title.lower():
-        matched_keyword = kw
-        break
-
-    if not matched_keyword:
-      continue
-
+    # ★ キーワード指定なしで全件ヒット対象とする
     processed_count += 1
     print(
-        f"🎯 狙い目 [{sale_type_label} {processed_count}/{max_limit}]:"
-        f" 残り{time_left_str} | [{matched_keyword}] | 価格: {price}円 |"
-        f" {title[:25]}..."
+        f"🎯 解析対象 [{sale_type_label} {processed_count}/{max_limit}]:"
+        f" 残り{time_left_str} | 価格: {price}円 | {title[:30]}..."
     )
 
     try:
@@ -437,13 +390,12 @@ def process_auction_list(
               "title": title,
               "price": price,
               "sale_type": sale_type_label,
-              "matched_keyword": matched_keyword,
               "time_left": time_left_str,
               "url": url,
           }
           send_discord_notification(item_data, g_result, seller_name)
         else:
-          print("  ⏩ スルー（赤字/社外品/偽物疑いのため通知なし）")
+          print("  ⏩ スルー（利益なし/社外品/偽物疑い）")
 
       seen_items.add(item_id)
       save_seen_items(seen_items)
@@ -455,11 +407,11 @@ def process_auction_list(
 
 
 # --------------------------------------------------
-# 6. メイン実行処理
+# 6. メイン実行
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（100件/10分〜3時間）を開始します..."
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（全件Gemini解析版）を開始します..."
   )
   seen_items = load_seen_items()
 
