@@ -37,6 +37,8 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add seen_quartz.json
-          git commit -m "Update seen quartz items [skip ci]" || exit 0
-          git push
+          if [ -f seen_quartz.json ]; then
+            git add seen_quartz.json
+            git commit -m "Update seen quartz items [skip ci]" || exit 0
+            git push
+          fi
