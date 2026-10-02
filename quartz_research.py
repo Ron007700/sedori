@@ -22,11 +22,11 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 
 MAX_PRICE_LIMIT = 10000
 
-# ヤフオク（クォーツ / オークションのみ / 終了が近い順 / 上限20件表示 &n=20）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=%E3%82%AF%E3%82%A9%E3%83%BC%E3%83%84&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=20"
+# ★ 変更: 検索件数を &n=100 に拡大して10〜59分前のゾーンまで一括取得
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=%E3%82%AF%E3%82%A9%E3%83%BC%E3%83%84&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=100"
 
 SEEN_FILE = "seen_quartz.json"
-MAX_AUCTION_ITEMS = 20  # 上限20件に調整
+MAX_AUCTION_ITEMS = 20  # 実際に詳細精査・AI解析する最大件数
 
 TARGET_KEYWORDS = [
     # SEIKO
@@ -214,7 +214,7 @@ def analyze_quartz_with_gemini(title, description, images, price):
   except APIError as e:
     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
       print(
-          "⚠️ 【Quota上限検知】Gemini APIの無料枠(1日あたりの上限)に達しました。"
+          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。"
       )
       print("   以降の解析を中断し、スクリプトを安全に終了します。")
       return "QUOTA_EXCEEDED"
@@ -298,13 +298,13 @@ def process_auction_list(
     print("⚠️ 商品要素が見つかりませんでした。")
     return
 
-  print(f"📦 検出件数: {len(items)}件 (精査開始)")
+  print(f"📦 一覧取得件数: {len(items)}件 (事前フィルタリング開始)")
 
   processed_count = 0
 
   for idx, item in enumerate(items, 1):
     if processed_count >= max_limit:
-      print(f"⏱ 上限{max_limit}件に達したため完了。")
+      print(f"⏱ 精査上限{max_limit}件に達したため完了。")
       break
 
     title_tag = item.select_one(".Product__titleLink") or item.select_one("a")
@@ -340,7 +340,22 @@ def process_auction_list(
     if item_id in seen_items:
       continue
 
-    # キーワードチェック
+    # ★ 爆速事前フィルター1: 「日」や「時間」が含まれる場合は即スキップ（1時間以上残っているもの）
+    if "日" in time_text or "時間" in time_text:
+      continue
+
+    # ★ 爆速事前フィルター2: 残り時間が「10分〜59分前」以外は詳細ページを開かずに即スキップ！
+    min_match = re.search(r"(\d+)\s*分", time_text)
+    if not min_match:
+      continue
+
+    minutes_left = int(min_match.group(1))
+    if not (10 <= minutes_left < 60):
+      continue
+
+    time_left_str = f"{minutes_left}分"
+
+    # タイトルキーワドチェック
     matched_keyword = None
     for kw in TARGET_KEYWORDS:
       if kw.lower() in title.lower():
@@ -350,19 +365,10 @@ def process_auction_list(
     if not matched_keyword:
       continue
 
-    if "日" in time_text or "時間" in time_text:
-      continue
-
-    min_match = re.search(r"(\d+)\s*分", time_text)
-    if not min_match:
-      continue
-
-    minutes_left = int(min_match.group(1))
-    time_left_str = f"{minutes_left}分"
-
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
+    # --- ここを通過したものだけが、本物の「10〜59分前の精査対象」 ---
     processed_count += 1
     print(
         f"\n🎯 ターゲット検知 [{processed_count}/{max_limit}]:"
@@ -371,6 +377,7 @@ def process_auction_list(
     )
 
     try:
+      # ★ 条件にマッチした商品のみ、詳細ページを開いてデータ取得＆画像ダウンロードを行なう
       seller_name, description, images = fetch_detail_page(page, url)
 
       text_to_check = f"{title} {description}".lower()
