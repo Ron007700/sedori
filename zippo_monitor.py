@@ -1,6 +1,5 @@
 import json
 import os
-import random
 import re
 import time
 from io import BytesIO
@@ -23,14 +22,13 @@ client = genai.Client(api_key=API_KEY)
 # 検索上限価格（3,000円以下）
 MAX_PRICE_LIMIT = 3000
 
-# URL（定額側は s1=new で確実に出品・新着順で取得）
+# オークション専用URL（最高3,000円 / 競売のみ / 残り時間の短い順）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
-URL_FIXED = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_buynow=1&s1=new&o1=a"
 
 SEEN_FILE = "seen_zippo.json"
 
+# 件数上限（ヤフオクのみ最大20件）
 MAX_AUCTION_ITEMS = 20
-MAX_FIXED_ITEMS = 10
 
 TARGET_KEYWORDS = [
     "STERLING",
@@ -123,7 +121,8 @@ def send_discord_notification(item, g_result, seller_name):
 ----------------------------------------
 🏪 **出品者**: {seller_name}
 📌 **商品名**: {item['title']}
-💰 **現在/即決価格**: {item['price']:,}円 ({item['sale_type']})
+💰 **現在価格**: {item['price']:,}円 ({item['sale_type']})
+⏰ **残り時間**: {item['time_left']}
 🏷 **ヒット属性**: {item['matched_keyword']}
 🔗 **URL**: {item['url']}
 
@@ -269,9 +268,9 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. リスト取得・精査（Bot対策・描画遅延強化）
+# 5. 商品処理のメイン関数（ヤフオク限定 / 残り10分〜59分判定）
 # --------------------------------------------------
-def process_target_list(
+def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
 ):
   print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
@@ -298,13 +297,13 @@ def process_target_list(
   if not items:
     items = soup.find_all("a", re.compile("Product__titleLink"))
 
-  print(f"📦 検出件数: {len(items)}件（上位{max_limit}件を精査）")
+  print(f"📦 検出件数: {len(items)}件（残り10〜59分の対象を精査）")
 
   processed_count = 0
 
   for item in items:
     if processed_count >= max_limit:
-      print(f"⏱️ 【{sale_type_label}】の上限{max_limit}件に達したため完了。")
+      print(f"⏱️ 上限{max_limit}件に達したため完了。")
       break
 
     if item.name == "a":
@@ -351,11 +350,28 @@ def process_target_list(
       else:
         item_id = url.split("/")[-1].split("?")[0]
 
-    if not item_id:
+    if not item_id or item_id in seen_items:
       continue
 
-    if item_id in seen_items:
+    # --------------------------------------------------
+    # 残り時間チェック（10分〜59分以内か）
+    # --------------------------------------------------
+    item_text = item.get_text(" ", strip=True)
+
+    # 「日」や「時間」が含まれている場合は除外（1時間以上残っているもの）
+    if "日" in item_text or "時間" in item_text:
       continue
+
+    # 「分」を抽出し、10〜59分以内かチェック
+    min_match = re.search(r"(\d+)分", item_text)
+    if not min_match:
+      continue
+
+    minutes_left = int(min_match.group(1))
+    if not (10 <= minutes_left < 60):
+      continue
+
+    time_left_str = f"{minutes_left}分"
 
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
@@ -372,7 +388,8 @@ def process_target_list(
     processed_count += 1
     print(
         f"🎯 狙い目 [{sale_type_label} {processed_count}/{max_limit}]:"
-        f" [{matched_keyword}] | 価格: {price}円 | {title[:25]}..."
+        f" 残り{time_left_str} | [{matched_keyword}] | 価格: {price}円 |"
+        f" {title[:25]}..."
     )
 
     try:
@@ -417,6 +434,7 @@ def process_target_list(
               "price": price,
               "sale_type": sale_type_label,
               "matched_keyword": matched_keyword,
+              "time_left": time_left_str,
               "url": url,
           }
           send_discord_notification(item_data, g_result, seller_name)
@@ -437,7 +455,7 @@ def process_target_list(
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク ZIPPO仕入れリサーチ（Gemini 3.6 Flash版）を開始します..."
+      "🚀 ヤフオク ZIPPO仕入れリサーチ（オークション限定20件）を開始します..."
   )
   seen_items = load_seen_items()
 
@@ -460,14 +478,13 @@ def main():
     )
     page = context.new_page()
 
-    # 1. オークション（残り時間短い順：20件）
-    process_target_list(
-        page, URL_AUCTION, MAX_AUCTION_ITEMS, "オークション(終了間近)", seen_items
-    )
-
-    # 2. 定額/フリマ（新着順：10件）
-    process_target_list(
-        page, URL_FIXED, MAX_FIXED_ITEMS, "定額/フリマ(新着順)", seen_items
+    # ヤフオク オークション形式のみ（残り10分〜59分以内 / 最大20件）
+    process_auction_list(
+        page,
+        URL_AUCTION,
+        MAX_AUCTION_ITEMS,
+        "ヤフオク(終了10〜59分前)",
+        seen_items,
     )
 
     browser.close()
