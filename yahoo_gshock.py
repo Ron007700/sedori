@@ -7,6 +7,7 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from PIL import Image
 from playwright.sync_api import sync_playwright
 import requests
@@ -17,13 +18,14 @@ import requests
 API_KEY = os.environ.get("GEMINI_API_KEY")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-client = genai.Client(api_key=API_KEY)
+# APIキー未設定時でもクラッシュしない安全化
+client = genai.Client(api_key=API_KEY) if API_KEY else None
 
 # 検索上限価格
 MAX_PRICE_LIMIT = 8000
 
-# オークション専用URL（最高8,000円 / 競売のみ / 残り時間の短い順）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a"
+# オークション専用URL（最高8,000円 / 競売のみ / 残り時間の短い順 / 上限20件表示 &n=20）
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=20"
 
 SEEN_FILE = "seen_items_yahoo.json"
 
@@ -170,6 +172,10 @@ def send_discord_notification(item, g_result, seller_name):
 # 3. Gemini 3.8 Flash による画像添削・真贋・相場推論
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
+  if not client:
+    print("❌ Gemini APIキーが読み込めていません")
+    return None
+
   prompt = f"""
 あなたはG-SHOCKおよびブランドウォッチの転売・仕入れ目利き専門家です。
 添付された商品画像と商品タイトル・説明文を詳細に添削・解析し、社外品や偽物を排除した上で、利益が見込めるか仕入れ判定を行ってください。
@@ -200,28 +206,29 @@ def analyze_gshock_with_gemini(title, description, images, price):
 【商品説明文】: {description}
 """
 
-  max_retries = 3
-  for attempt in range(max_retries):
-    try:
-      response = client.models.generate_content(
-          model="gemini-3.8-flash",
-          contents=images + [prompt],
-          config=types.GenerateContentConfig(
-              response_mime_type="application/json", temperature=0.1
-          ),
+  try:
+    response = client.models.generate_content(
+        model="gemini-3.8-flash",
+        contents=images + [prompt],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", temperature=0.1
+        ),
+    )
+    return json.loads(response.text)
+
+  except APIError as e:
+    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+      print(
+          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。"
       )
-      return json.loads(response.text)
-    except Exception as e:
-      if attempt < max_retries - 1:
-        wait_time = (attempt + 1) * 3
-        print(
-            f"  ⚠️️ Gemini一時的エラー。{wait_time}秒後に再試行します..."
-            f" ({attempt + 1}/{max_retries})"
-        )
-        time.sleep(wait_time)
-      else:
-        print(f"❌ Gemini解析失敗: {e}")
-        return None
+      print("   以降の解析を中断し、スクリプトを安全に終了します。")
+      return "QUOTA_EXCEEDED"
+    else:
+      print(f"❌ Gemini APIエラー: {e}")
+      return None
+  except Exception as e:
+    print(f"❌ Gemini解析例外: {e}")
+    return None
 
 
 # --------------------------------------------------
@@ -234,15 +241,13 @@ def fetch_detail_page(page, url):
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
 
-  seller_tag = soup.find(
-      "a", class_=re.compile("Seller__name|Seller__link")
-  ) or soup.find("p", class_=re.compile("Seller"))
-  seller_name = seller_tag.text.strip() if seller_tag else "不明出品者"
+  seller_tag = soup.select_one(".Seller__name, .Seller__link, [class*='Seller']")
+  seller_name = seller_tag.get_text(strip=True) if seller_tag else "不明出品者"
 
-  desc_tag = soup.find(
-      "div", class_="ProductExplanation__commentArea"
-  ) or soup.find("section", class_="ProductExplanation")
-  description = desc_tag.text.strip() if desc_tag else "説明文なし"
+  desc_tag = soup.select_one(
+      ".ProductExplanation__commentArea, .ProductExplanation"
+  )
+  description = desc_tag.get_text(strip=True) if desc_tag else "説明文なし"
 
   img_urls = []
   for img in soup.find_all("img"):
@@ -254,7 +259,11 @@ def fetch_detail_page(page, url):
 
   img_urls = img_urls[:4]
 
-  headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      )
+  }
   images = []
   for img_url in img_urls:
     try:
@@ -276,13 +285,23 @@ def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
 ):
   print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
-  page.goto(target_url, wait_until="networkidle", timeout=25000)
-  page.evaluate("window.scrollBy(0, 800)")
+
+  try:
+    page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+  except Exception as e:
+    print(f"❌ ページ移動エラー: {e}")
+    return
+
   time.sleep(1)
 
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
-  items = soup.select(".Product") or soup.select("li.Product")
+  items = soup.select("li.Product") or soup.select(".Product")
+
+  if not items:
+    print("⚠️ 商品要素が見つかりませんでした。")
+    return
+
   print(f"📦 検出件数: {len(items)}件（残り10〜59分の対象を精査）")
 
   processed_count = 0
@@ -292,49 +311,54 @@ def process_auction_list(
       print(f"⏱️ 上限{max_limit}件に達したため完了。")
       break
 
-    title_tag = item.select_one(".Product__titleLink")
-    price_tag = item.select_one(".Product__priceValue")
+    title_tag = item.select_one(".Product__titleLink") or item.select_one("a")
+    price_tag = item.select_one(".Product__priceValue") or item.select_one(
+        "[class*='price']"
+    )
 
     if not (title_tag and price_tag):
       continue
 
     title = title_tag.get_text(strip=True)
-    price_raw = price_tag.get_text(strip=True)
-    price_str = (
-        price_raw.replace("円", "").replace(",", "").replace("即決", "").strip()
-    )
-
-    try:
-      price = int(price_str)
-    except ValueError:
+    price_digits = re.sub(r"[^\d]", "", price_tag.get_text(strip=True))
+    if not price_digits:
       continue
+    price = int(price_digits)
 
     # 【価格ガード】8,000円超の広告・ストア商品は除外
     if price > MAX_PRICE_LIMIT:
       continue
 
     url = title_tag.get("href", "")
-    item_id = item.get("data-auction-id") or url.split("/")[-1]
+    item_id = item.get("data-auction-id")
+    if not item_id and url:
+      match = re.search(r"/auction/([a-zA-Z0-9]+)", url)
+      item_id = match.group(1) if match else url
 
     # 既読スキップ
     if item_id in seen_items:
       continue
 
-    # --------------------------------------------------
     # 残り時間チェック（10分〜59分以内か）
-    # --------------------------------------------------
-    item_text = item.get_text(" ", strip=True)
+    time_tag = item.select_one(".Product__time") or item.select_one(
+        "[class*='time']"
+    )
+    time_text = (
+        time_tag.get_text(strip=True)
+        if time_tag
+        else item.get_text(" ", strip=True)
+    )
 
-    # 「日」や「時間」が含まれている場合は除外（1時間以上残っているもの）
-    if "日" in item_text or "時間" in item_text:
+    if "日" in time_text or "時間" in time_text:
       continue
 
-    # 「分」を抽出し、10〜59分以内かチェック
-    min_match = re.search(r"(\d+)分", item_text)
+    min_match = re.search(r"(\d+)\s*分", time_text)
     if not min_match:
       continue
 
     minutes_left = int(min_match.group(1))
+
+    # ★ 10分〜59分前のみを対象（10分未満は除外）
     if not (10 <= minutes_left < 60):
       continue
 
@@ -375,6 +399,10 @@ def process_auction_list(
 
       print("🤖 Gemini 3.8 Flashで目利き試算中...")
       g_result = analyze_gshock_with_gemini(title, description, images, price)
+
+      if g_result == "QUOTA_EXCEEDED":
+        print("⛔ 制限のため処理をここで安全に停止します。")
+        break
 
       if g_result:
         score = g_result.get("condition_score", "")
@@ -431,16 +459,23 @@ def main():
   seen_items = load_seen_items()
 
   with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled",
+        ],
+    )
     context = browser.new_context(
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
+        ),
+        viewport={"width": 1280, "height": 800},
+        locale="ja-JP",
     )
     page = context.new_page()
 
-    # ヤフオク オークション形式のみ（残り10分〜59分以内 / 最大20件）
     process_auction_list(
         page,
         URL_AUCTION,
