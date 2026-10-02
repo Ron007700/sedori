@@ -7,6 +7,7 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from PIL import Image
 from playwright.sync_api import sync_playwright
 import requests
@@ -21,11 +22,11 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 
 MAX_PRICE_LIMIT = 10000
 
-# ヤフオク（クォーツ / オークションのみ / 終了が近い順）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=%E3%82%AF%E3%82%A9%E3%83%BC%E3%83%84&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
+# ヤフオク（クォーツ / オークションのみ / 終了が近い順 / 上限20件表示 &n=20）
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=%E3%82%AF%E3%82%A9%E3%83%BC%E3%83%84&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=20"
 
 SEEN_FILE = "seen_quartz.json"
-MAX_AUCTION_ITEMS = 20
+MAX_AUCTION_ITEMS = 20  # 上限20件に調整
 
 TARGET_KEYWORDS = [
     # SEIKO
@@ -162,7 +163,7 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini 解析
+# 3. Gemini 解析 (429エラーハンドリング付き)
 # --------------------------------------------------
 def analyze_quartz_with_gemini(title, description, images, price):
   if not client:
@@ -200,23 +201,29 @@ def analyze_quartz_with_gemini(title, description, images, price):
 【現在価格】: {price}円
 """
 
-  max_retries = 3
-  for attempt in range(max_retries):
-    try:
-      response = client.models.generate_content(
-          model="gemini-3.6-flash",
-          contents=images + [prompt],
-          config=types.GenerateContentConfig(
-              response_mime_type="application/json", temperature=0.1
-          ),
+  try:
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=images + [prompt],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", temperature=0.1
+        ),
+    )
+    return json.loads(response.text)
+
+  except APIError as e:
+    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+      print(
+          "⚠️ 【Quota上限検知】Gemini APIの無料枠(1日あたりの上限)に達しました。"
       )
-      return json.loads(response.text)
-    except Exception as e:
-      if attempt < max_retries - 1:
-        time.sleep((attempt + 1) * 2)
-      else:
-        print(f"❌ Gemini解析失敗: {e}")
-        return None
+      print("   以降の解析を中断し、スクリプトを安全に終了します。")
+      return "QUOTA_EXCEEDED"
+    else:
+      print(f"❌ Gemini APIエラー: {e}")
+      return None
+  except Exception as e:
+    print(f"❌ Gemini解析例外: {e}")
+    return None
 
 
 # --------------------------------------------------
@@ -245,7 +252,8 @@ def fetch_detail_page(page, url):
       if clean_url not in img_urls and not clean_url.endswith(".gif"):
         img_urls.append(clean_url)
 
-  img_urls = img_urls[:5]
+  # 画像は最大3枚までに制限
+  img_urls = img_urls[:3]
 
   headers = {
       "User-Agent": (
@@ -267,7 +275,7 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. リスト取得・精査（デバッグログ付き）
+# 5. リスト取得・精査
 # --------------------------------------------------
 def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
@@ -284,12 +292,10 @@ def process_auction_list(
 
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
-
-  # ヤフオクの商品要素を取得
   items = soup.select("li.Product") or soup.select(".Product")
 
   if not items:
-    print("⚠️ 商品要素が見つかりませんでした。HTMLの構造が変わった可能性があります。")
+    print("⚠️ 商品要素が見つかりませんでした。")
     return
 
   print(f"📦 検出件数: {len(items)}件 (精査開始)")
@@ -301,14 +307,12 @@ def process_auction_list(
       print(f"⏱ 上限{max_limit}件に達したため完了。")
       break
 
-    # タイトル
     title_tag = item.select_one(".Product__titleLink") or item.select_one("a")
     if not title_tag:
       continue
     title = title_tag.get_text(strip=True)
     url = title_tag.get("href", "")
 
-    # 価格
     price_tag = item.select_one(".Product__priceValue") or item.select_one(
         "[class*='price']"
     )
@@ -319,7 +323,6 @@ def process_auction_list(
       continue
     price = int(price_digits)
 
-    # 残り時間
     time_tag = item.select_one(".Product__time") or item.select_one(
         "[class*='time']"
     )
@@ -329,13 +332,11 @@ def process_auction_list(
         else item.get_text(" ", strip=True)
     )
 
-    # ID抽出
     item_id = item.get("data-auction-id")
     if not item_id and url:
       match = re.search(r"/auction/([a-zA-Z0-9]+)", url)
       item_id = match.group(1) if match else url
 
-    # デバッグ判定
     if item_id in seen_items:
       continue
 
@@ -347,32 +348,21 @@ def process_auction_list(
         break
 
     if not matched_keyword:
-      # キーワード不一致のデバッグ表示（最初の5件のみ表示）
-      if idx <= 5:
-        print(f"  [#{idx} スキップ] 対象キーワードなし: {title[:20]}...")
       continue
 
-    # 残り時間判定（日・時間が含まれるものはまだ時間が残っているためスキップ）
     if "日" in time_text or "時間" in time_text:
-      print(
-          f"  [#{idx} スキップ] 残り時間が長いため: {time_text} |"
-          f" {title[:20]}"
-      )
       continue
 
     min_match = re.search(r"(\d+)\s*分", time_text)
     if not min_match:
-      print(f"  [#{idx} スキップ] 時間取得不可: {time_text} | {title[:20]}")
       continue
 
     minutes_left = int(min_match.group(1))
     time_left_str = f"{minutes_left}分"
 
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
-      print(f"  [#{idx} スキップ] NGワード検出(タイトル): {title[:20]}")
       continue
 
-    # 条件突破！
     processed_count += 1
     print(
         f"\n🎯 ターゲット検知 [{processed_count}/{max_limit}]:"
@@ -393,6 +383,11 @@ def process_auction_list(
 
       print("🤖 GeminiでAI目利き試算中...")
       g_result = analyze_quartz_with_gemini(title, description, images, price)
+
+      # Quota上限に達した場合は処理を安全中断
+      if g_result == "QUOTA_EXCEEDED":
+        print("⛔ 制限のため処理をここで安全に停止します。")
+        break
 
       if g_result:
         score = g_result.get("condition_score", "")
