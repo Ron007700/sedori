@@ -7,9 +7,9 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
-.import requests
 from PIL import Image
 from playwright.sync_api import sync_playwright
+import requests
 
 # ==================================================
 # 1. 環境変数からの設定読み込み & ストア設定
