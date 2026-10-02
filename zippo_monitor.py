@@ -7,6 +7,7 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from PIL import Image
 from playwright.sync_api import sync_playwright
 import requests
@@ -17,13 +18,14 @@ import requests
 API_KEY = os.environ.get("GEMINI_API_KEY")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-client = genai.Client(api_key=API_KEY)
+# APIキー未設定時の安全化
+client = genai.Client(api_key=API_KEY) if API_KEY else None
 
 # 検索上限価格（3,000円以下）
 MAX_PRICE_LIMIT = 3000
 
-# オークション専用URL（最高3,000円 / 競売のみ / 残り時間の短い順）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a"
+# オークション専用URL（最高3,000円 / 競売のみ / 残り時間の短い順 / 上限20件表示 &n=20）
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=20"
 
 SEEN_FILE = "seen_zippo.json"
 
@@ -130,7 +132,7 @@ def send_discord_notification(item, g_result, seller_name):
 🔢 **シリアル/限定**: {g_result.get('serial_or_edition', 'なし/不明')}
 🔍 **底面刻印(ボトム)**: {g_result.get('bottom_stamp', '確認不可')}
 📊 **総合評価**: **{g_result.get('condition_score', '-')}**
-⚠️ **状態フラグ**: {risk_text}
+⚠️️ **状態フラグ**: {risk_text}
 
 💵 **想定売価**: {g_result.get('estimated_resale_normal', '-')}円
 🎯 **推奨購入上限額**: **{g_result.get('max_bid_price_target', '-')}円**
@@ -155,9 +157,13 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini 解析 (3.6 Flash)
+# 3. Gemini 解析 (429エラーハンドリング付き)
 # --------------------------------------------------
 def analyze_zippo_with_gemini(title, description, images, price):
+  if not client:
+    print("❌ Gemini APIキーが読み込めていません")
+    return None
+
   prompt = f"""
 あなたはZIPPO（ジッポー）ライターのヴィンテージ・限定品の鑑定および転売目利き専門家です。
 添付された商品画像（特に底面のボトム刻印やシリアル刻印）と商品タイトル・説明文を詳細に解析し、仕入れ判定を行ってください。
@@ -193,28 +199,29 @@ def analyze_zippo_with_gemini(title, description, images, price):
 【商品説明文】: {description}
 """
 
-  max_retries = 3
-  for attempt in range(max_retries):
-    try:
-      response = client.models.generate_content(
-          model="gemini-3.6-flash",
-          contents=images + [prompt],
-          config=types.GenerateContentConfig(
-              response_mime_type="application/json", temperature=0.1
-          ),
+  try:
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=images + [prompt],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", temperature=0.1
+        ),
+    )
+    return json.loads(response.text)
+
+  except APIError as e:
+    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+      print(
+          "⚠️ 【Quota上限検知】Gemini APIの無料枠(1日あたりの上限)に達しました。"
       )
-      return json.loads(response.text)
-    except Exception as e:
-      if attempt < max_retries - 1:
-        wait_time = (attempt + 1) * 3
-        print(
-            f"  ⚠️ Gemini一時的エラー。{wait_time}秒後に再試行します..."
-            f" ({attempt + 1}/{max_retries})"
-        )
-        time.sleep(wait_time)
-      else:
-        print(f"❌ Gemini解析失敗: {e}")
-        return None
+      print("   以降の解析を中断し、スクリプトを安全に終了します。")
+      return "QUOTA_EXCEEDED"
+    else:
+      print(f"❌ Gemini APIエラー: {e}")
+      return None
+  except Exception as e:
+    print(f"❌ Gemini解析例外: {e}")
+    return None
 
 
 # --------------------------------------------------
@@ -227,15 +234,13 @@ def fetch_detail_page(page, url):
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
 
-  seller_tag = soup.find(
-      "a", class_=re.compile("Seller__name|Seller__link")
-  ) or soup.find("p", class_=re.compile("Seller"))
-  seller_name = seller_tag.text.strip() if seller_tag else "不明出品者"
+  seller_tag = soup.select_one(".Seller__name, .Seller__link, [class*='Seller']")
+  seller_name = seller_tag.get_text(strip=True) if seller_tag else "不明出品者"
 
-  desc_tag = soup.find(
-      "div", class_="ProductExplanation__commentArea"
-  ) or soup.find("section", class_="ProductExplanation")
-  description = desc_tag.text.strip() if desc_tag else "説明文なし"
+  desc_tag = soup.select_one(
+      ".ProductExplanation__commentArea, .ProductExplanation"
+  )
+  description = desc_tag.get_text(strip=True) if desc_tag else "説明文なし"
 
   img_urls = []
   for img in soup.find_all("img"):
@@ -245,12 +250,12 @@ def fetch_detail_page(page, url):
       if clean_url not in img_urls and not clean_url.endswith(".gif"):
         img_urls.append(clean_url)
 
-  img_urls = img_urls[:5]
+  # 画像は最大3枚までに制限（API消費節約）
+  img_urls = img_urls[:3]
 
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       )
   }
   images = []
@@ -268,7 +273,7 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. 商品処理のメイン関数（ヤフオク限定 / 残り10分〜59分判定）
+# 5. 商品処理のメイン関数
 # --------------------------------------------------
 def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
@@ -276,63 +281,42 @@ def process_auction_list(
   print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
 
   try:
-    page.goto(target_url, wait_until="networkidle", timeout=30000)
-  except Exception:
     page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+  except Exception as e:
+    print(f"❌ ページ移動エラー: {e}")
+    return
 
-  for i in range(1, 4):
-    page.evaluate(f"window.scrollTo(0, {i * 800});")
-    time.sleep(0.8)
+  time.sleep(2)
 
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
-
-  items = (
-      soup.select("li.Product")
-      or soup.select(".Product")
-      or soup.select("div[data-auction-id]")
-      or soup.select("li[class*='Product']")
-  )
+  items = soup.select("li.Product") or soup.select(".Product")
 
   if not items:
-    items = soup.find_all("a", re.compile("Product__titleLink"))
+    print("⚠️ 商品要素が見つかりませんでした。")
+    return
 
-  print(f"📦 検出件数: {len(items)}件（残り10〜59分の対象を精査）")
+  print(f"📦 検出件数: {len(items)}件 (精査開始)")
 
   processed_count = 0
 
-  for item in items:
+  for idx, item in enumerate(items, 1):
     if processed_count >= max_limit:
-      print(f"⏱️ 上限{max_limit}件に達したため完了。")
+      print(f"⏱ 上限{max_limit}件に達したため完了。")
       break
 
-    if item.name == "a":
-      title_tag = item
-      parent = item.find_parent("li") or item.find_parent("div")
-      price_tag = (
-          parent.select_one("[class*='price'] or [class*='Price']")
-          if parent
-          else None
-      )
-    else:
-      title_tag = (
-          item.select_one(".Product__titleLink")
-          or item.select_one("a[data-auction-title]")
-          or item.find("a", class_=re.compile("title", re.I))
-      )
-      price_tag = (
-          item.select_one(".Product__priceValue")
-          or item.select_one("[class*='price']")
-          or item.select_one("[class*='Price']")
-      )
-
-    if not (title_tag and price_tag):
+    title_tag = item.select_one(".Product__titleLink") or item.select_one("a")
+    if not title_tag:
       continue
-
     title = title_tag.get_text(strip=True)
-    price_raw = price_tag.get_text(strip=True)
+    url = title_tag.get("href", "")
 
-    price_digits = re.sub(r"[^\d]", "", price_raw)
+    price_tag = item.select_one(".Product__priceValue") or item.select_one(
+        "[class*='price']"
+    )
+    if not price_tag:
+      continue
+    price_digits = re.sub(r"[^\d]", "", price_tag.get_text(strip=True))
     if not price_digits:
       continue
     price = int(price_digits)
@@ -340,42 +324,24 @@ def process_auction_list(
     if price > MAX_PRICE_LIMIT:
       continue
 
-    url = title_tag.get("href", "")
+    time_tag = item.select_one(".Product__time") or item.select_one(
+        "[class*='time']"
+    )
+    time_text = (
+        time_tag.get_text(strip=True)
+        if time_tag
+        else item.get_text(" ", strip=True)
+    )
 
     item_id = item.get("data-auction-id")
     if not item_id and url:
       match = re.search(r"/auction/([a-zA-Z0-9]+)", url)
-      if match:
-        item_id = match.group(1)
-      else:
-        item_id = url.split("/")[-1].split("?")[0]
+      item_id = match.group(1) if match else url
 
-    if not item_id or item_id in seen_items:
+    if item_id in seen_items:
       continue
 
-    # --------------------------------------------------
-    # 残り時間チェック（10分〜59分以内か）
-    # --------------------------------------------------
-    item_text = item.get_text(" ", strip=True)
-
-    # 「日」や「時間」が含まれている場合は除外（1時間以上残っているもの）
-    if "日" in item_text or "時間" in item_text:
-      continue
-
-    # 「分」を抽出し、10〜59分以内かチェック
-    min_match = re.search(r"(\d+)分", item_text)
-    if not min_match:
-      continue
-
-    minutes_left = int(min_match.group(1))
-    if not (10 <= minutes_left < 60):
-      continue
-
-    time_left_str = f"{minutes_left}分"
-
-    if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
-      continue
-
+    # キーワードチェック
     matched_keyword = None
     for kw in TARGET_KEYWORDS:
       if kw.lower() in title.lower():
@@ -385,10 +351,24 @@ def process_auction_list(
     if not matched_keyword:
       continue
 
+    # 残り時間チェック（1時間以内のみ）
+    if "日" in time_text or "時間" in time_text:
+      continue
+
+    min_match = re.search(r"(\d+)\s*分", time_text)
+    if not min_match:
+      continue
+
+    minutes_left = int(min_match.group(1))
+    time_left_str = f"{minutes_left}分"
+
+    if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
+      continue
+
     processed_count += 1
     print(
-        f"🎯 狙い目 [{sale_type_label} {processed_count}/{max_limit}]:"
-        f" 残り{time_left_str} | [{matched_keyword}] | 価格: {price}円 |"
+        f"\n🎯 ターゲット検知 [{processed_count}/{max_limit}]:"
+        f" 残り{time_left_str} | [{matched_keyword}] | {price}円 |"
         f" {title[:25]}..."
     )
 
@@ -398,13 +378,18 @@ def process_auction_list(
       text_to_check = f"{title} {description}".lower()
       found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
       if found_ng:
-        print(f"  ⏩ 本文NGワード検出のためスキップ: {', '.join(found_ng)}")
+        print(f"  ⏩ 本文NGワードのためスキップ: {', '.join(found_ng)}")
         seen_items.add(item_id)
         save_seen_items(seen_items)
         continue
 
-      print("🤖 Gemini 3.6 Flashで底面刻印・利益試算中...")
+      print("🤖 GeminiでAI目利き試算中...")
       g_result = analyze_zippo_with_gemini(title, description, images, price)
+
+      # Quota上限に達した場合は処理を安全中断
+      if g_result == "QUOTA_EXCEEDED":
+        print("⛔ 制限のため処理をここで安全に停止します。")
+        break
 
       if g_result:
         score = g_result.get("condition_score", "")
@@ -439,7 +424,7 @@ def process_auction_list(
           }
           send_discord_notification(item_data, g_result, seller_name)
         else:
-          print("  ⏩ スルー（赤字/不適格のため通知なし）")
+          print("  ⏩ スルー（利益条件未達）")
 
       seen_items.add(item_id)
       save_seen_items(seen_items)
@@ -471,19 +456,17 @@ def main():
     context = browser.new_context(
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         ),
         viewport={"width": 1280, "height": 800},
         locale="ja-JP",
     )
     page = context.new_page()
 
-    # ヤフオク オークション形式のみ（残り10分〜59分以内 / 最大20件）
     process_auction_list(
         page,
         URL_AUCTION,
         MAX_AUCTION_ITEMS,
-        "ヤフオク(終了10〜59分前)",
+        "ヤフオク(終了間近)",
         seen_items,
     )
 
