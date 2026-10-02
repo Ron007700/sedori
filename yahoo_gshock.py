@@ -27,10 +27,10 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 価格上限設定
 MAX_PRICE_LIMIT = 8000
 
-# ★ カテゴリを元の「23140（腕時計）」に設定し、現在価格上限8,000円＆終了順指定
+# ★ カテゴリ「23140（腕時計）」、現在価格上限8,000円、終了順指定、取得件数を上位50件(n=50)に設定
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
-    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
+    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=50"
 )
 
 SEEN_FILE = "seen_items_yahoo.json"
@@ -99,7 +99,7 @@ def send_discord_notification(item, g_result, seller_name):
 🏷️ **モデル特定**: {g_result.get('brand', 'CASIO')} / {g_result.get('model', '不明')}
 🛡 **純正性判定**: {g_result.get('authenticity_status', '不明')}
 📊 **総合評価**: **{g_result.get('condition_score', '-')}**
-🏷️️ **状態・注記フラグ**: {risk_text}
+🏷 **状態・注記フラグ**: {risk_text}
 
 💵 **想定売価**: {g_result.get('estimated_resale_normal', '-')}円
 🎯 **推奨落札/購入上限額**: **{g_result.get('max_bid_price_target', '-')}円**
@@ -250,18 +250,17 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. 一覧抽出 ＆ ピンポイント解析処理（動的レイアウト強化版）
+# 5. 一覧抽出 ＆ ピンポイント解析処理
 # --------------------------------------------------
 def process_auction_list(page, target_url, sale_type_label, seen_items):
   print(
       f"\n🔍 一覧ページ取得中 (腕時計カテゴリ・上限8000円・終了間近"
-      f" 100件):\n {target_url}",
+      f" 上位50件):\n {target_url}",
       flush=True,
   )
 
   try:
     page.goto(target_url, wait_until="networkidle", timeout=25000)
-    # 動的コンテンツの読み込みを促すため軽くスクロール
     page.evaluate("window.scrollBy(0, 500);")
     time.sleep(2)
   except Exception as e:
@@ -271,7 +270,6 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
 
-  # 新旧・各種レスポンシブUIに対応するためのマルチセレクタ
   items = (
       soup.select("li.Product")
       or soup.select(".Product")
@@ -279,7 +277,6 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       or soup.select("article")
   )
 
-  # 万が一クラス名で取れない場合、オークションのリンク構造から親要素を取得
   if not items:
     anchor_items = soup.find_all("a", href=re.compile(r"/page/|/auction/"))
     items = []
@@ -292,8 +289,11 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     print("⚠️ 商品要素が見つかりませんでした。", flush=True)
     return
 
+  # 上位50件に制限
+  items = items[:50]
+
   print(
-      f"📦 取得完了: {len(items)}件一覧から「5分〜59分」の対象を抽出します...",
+      f"📦 取得完了: 上位{len(items)}件一覧から「5分〜59分」の対象を抽出します...",
       flush=True,
   )
 
@@ -301,14 +301,12 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 
   # --- 【第1段階】一覧画面での高速フィルタリング ---
   for item in items:
-    # タイトルとリンクの取得
     title_tag = (
         item.select_one(".Product__titleLink")
         or item.select_one("a[href*='/auction/']")
         or item.select_one("a[href*='/page/']")
         or item.select_one("a")
     )
-    # 価格の取得
     price_tag = item.select_one(".Product__priceValue") or item.select_one(
         "[class*='price']"
     )
@@ -462,7 +460,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（検索復旧・動的構造対応版）を開始します...",
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（上位50件・残り5〜59分抽出版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
