@@ -26,7 +26,7 @@ URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PR
 SEEN_FILE = "seen_items_yahoo.json"
 MAX_AUCTION_ITEMS = 100
 
-# ★ 物理的破損・再生不能な状態のみ弾くNGリスト
+# 物理的破損・再生不能な状態のみ弾くNGリスト
 NG_KEYWORDS = [
     "加水分解",
     "割れ",
@@ -120,7 +120,7 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini 解析（二次電池コスト判定込み）
+# 3. Gemini 解析
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
   if not client:
@@ -235,7 +235,7 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. メイン処理（キーワード絞り込みを排除）
+# 5. メイン処理（直前〜3時間の全時間帯対応）
 # --------------------------------------------------
 def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
@@ -258,7 +258,7 @@ def process_auction_list(
     print("⚠️ 商品要素が見つかりませんでした。")
     return
 
-  print(f"📦 検出件数: {len(items)}件（残り10分〜3時間の対象を精査）")
+  print(f"📦 検出件数: {len(items)}件（直前〜3時間の対象を精査）")
 
   processed_count = 0
 
@@ -293,7 +293,7 @@ def process_auction_list(
     if item_id in seen_items:
       continue
 
-    # 時間チェック（10分〜3時間）
+    # --- 残り時間判定（秒〜3時間前まで対応） ---
     time_tag = item.select_one(".Product__time") or item.select_one(
         "[class*='time']"
     )
@@ -316,28 +316,30 @@ def process_auction_list(
       mins = int(min_in_hour_match.group(1)) if min_in_hour_match else 0
 
       minutes_left = (hours * 60) + mins
-    else:
+    elif "分" in time_text:
       min_match = re.search(r"(\d+)\s*分", time_text)
       if min_match:
         minutes_left = int(min_match.group(1))
+    elif "秒" in time_text:
+      minutes_left = 0  # 残り数秒〜数十秒
 
     if minutes_left is None:
       continue
 
-    if not (10 <= minutes_left <= 180):
+    # ★ 0分（数秒前）〜180分（3時間前）まで許可
+    if not (0 <= minutes_left <= 180):
       continue
 
     time_left_str = (
         f"{minutes_left // 60}時間{minutes_left % 60}分"
         if minutes_left >= 60
-        else f"{minutes_left}分"
+        else (f"{minutes_left}分" if minutes_left > 0 else "1分未満(直前)")
     )
 
     # タイトルの物理NGチェック（加水分解など）
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
-    # ★ キーワード指定なしで全件ヒット対象とする
     processed_count += 1
     print(
         f"🎯 解析対象 [{sale_type_label} {processed_count}/{max_limit}]:"
@@ -410,9 +412,7 @@ def process_auction_list(
 # 6. メイン実行
 # --------------------------------------------------
 def main():
-  print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（全件Gemini解析版）を開始します..."
-  )
+  print("🚀 ヤフオク G-SHOCK仕入れリサーチ（直前〜3時間前対応）を開始します...")
   seen_items = load_seen_items()
 
   with sync_playwright() as p:
@@ -437,7 +437,7 @@ def main():
         page,
         URL_AUCTION,
         MAX_AUCTION_ITEMS,
-        "ヤフオク(終了10分〜3時間前)",
+        "ヤフオク(終了直前〜3時間前)",
         seen_items,
     )
 
