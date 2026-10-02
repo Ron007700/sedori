@@ -23,11 +23,11 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 検索上限価格
 MAX_PRICE_LIMIT = 8000
 
-# 検索URL（件数 n=50）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=50"
+# ★ 変更: 件数を n=100 に拡大
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
 
 SEEN_FILE = "seen_items_yahoo.json"
-MAX_AUCTION_ITEMS = 50  # 精査件数上限
+MAX_AUCTION_ITEMS = 100  # ★ 変更: 精査件数上限を100件へ
 
 # 狙い目キーワード（「ソーラー」を除外し、コラボ・カラー・希少型番等を指定）
 TARGET_KEYWORDS = [
@@ -164,7 +164,6 @@ def analyze_gshock_with_gemini(title, description, images, price):
     print("❌ Gemini APIキーが読み込めていません")
     return None
 
-  # ★ 更新: タフソーラー/電波ソーラー機のメンテ代（二次電池1200円）をプロンプトへ追加
   prompt = f"""
 あなたはG-SHOCKおよびブランドウォッチの転売・仕入れ目利き専門家です。
 添付された商品画像と商品タイトル・説明文を詳細に添削・解析し、社外品や偽物を排除した上で、電池交換や清掃を行って利益が見込めるか仕入れ判定を行ってください。
@@ -421,7 +420,7 @@ def process_auction_list(
 
         if price >= max_target and max_target > 0:
           print(
-              f"  ⚠️️ 赤字判定補正: 現在価格({price}円) >="
+              f"  ⚠️ 赤字判定補正: 現在価格({price}円) >="
               f" 推奨上限額({max_target}円)"
           )
           score = "C（不可）"
@@ -460,7 +459,7 @@ def process_auction_list(
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（50件/10分〜3時間）を開始します..."
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（100件/10分〜3時間）を開始します..."
   )
   seen_items = load_seen_items()
 
