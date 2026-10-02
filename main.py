@@ -1,6 +1,5 @@
 import json
 import os
-import random
 import re
 import time
 from io import BytesIO
@@ -8,9 +7,9 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+.import requests
 from PIL import Image
 from playwright.sync_api import sync_playwright
-import requests
 
 # ==================================================
 # 1. 環境変数からの設定読み込み & ストア設定
@@ -31,7 +30,7 @@ SEARCH_KEYWORD = "ソーラー"
 EXCLUDE_KEYWORDS = ["ELGIN", "Elgin", "elgin", "エルジン"]
 
 SEEN_FILE = "seen_solar.json"
-MAX_ITEMS_PER_STORE = 15
+MAX_ITEMS_PER_STORE = 20  # ヤフオク最大20件
 
 
 # ==================================================
@@ -106,7 +105,7 @@ def send_discord_notify(store_name, item, result, current_price=0):
 
 
 # ==================================================
-# 3. リスト取得（残り1時間未満の厳格抽出）
+# 3. リスト取得（ヤフオク限定・残り10分〜1時間以内）
 # ==================================================
 def get_urgent_auction_urls(page, store_name, search_url, seen_items):
   print(
@@ -127,6 +126,7 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
 
   for a in soup.find_all("a", href=True):
     href = a["href"]
+    # ヤフオクのオークション詳細URLのみを抽出
     if "/auction/" in href:
       clean_url = href.split("?")[0]
       if not clean_url.startswith("http"):
@@ -141,31 +141,35 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
       parent = a.find_parent(["li", "div", "article"])
       parent_text = parent.get_text(" ", strip=True) if parent else ""
 
-      # 1時間未満（「分」または「秒」が含まれ、「日」「時間」が含まれない）
-      if ("分" in parent_text or "秒" in parent_text) and not (
-          "日" in parent_text or "時間" in parent_text
-      ):
-        time_match = re.search(r"(\d+分|\d+秒)", parent_text)
-        time_str = time_match.group(0) if time_match else "1時間未満"
+      # 「日」や「時間」が含まれる場合は除外（1時間以上残っているもの）
+      if "日" in parent_text or "時間" in parent_text:
+        continue
 
-        title = a.get_text().strip()
-        if not title or len(title) < 5:
-          title = parent_text[:35] if parent_text else "タイトル不明"
+      # 残り「分」を取得し、10分以上60分未満かチェック
+      min_match = re.search(r"(\d+)分", parent_text)
+      if min_match:
+        minutes_left = int(min_match.group(1))
+        if 10 <= minutes_left < 60:
+          time_str = f"{minutes_left}分"
 
-        if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
-          print(
-              f"🚫 除外対象ブランドのためスキップ: {title[:20]}...",
-              flush=True,
-          )
-          continue
+          title = a.get_text().strip()
+          if not title or len(title) < 5:
+            title = parent_text[:35] if parent_text else "タイトル不明"
 
-        if not any(x["item_id"] == item_id for x in urgent_items):
-          urgent_items.append({
-              "item_id": item_id,
-              "title": title,
-              "url": clean_url,
-              "time": time_str,
-          })
+          if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
+            print(
+                f"🚫 除外対象ブランドのためスキップ: {title[:20]}...",
+                flush=True,
+            )
+            continue
+
+          if not any(x["item_id"] == item_id for x in urgent_items):
+            urgent_items.append({
+                "item_id": item_id,
+                "title": title,
+                "url": clean_url,
+                "time": time_str,
+            })
 
   return urgent_items
 
@@ -332,6 +336,7 @@ def main():
       store_name = store["name"]
       seller_id = store["id"]
 
+      # is_auction=1 (ヤフオクのオークション形式限定)
       target_search_url = (
           f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
       )
@@ -346,22 +351,19 @@ def main():
       target_items = target_items[:MAX_ITEMS_PER_STORE]
 
       print(
-          f"⏰ 残り1時間未満の上位【 {len(target_items)} 件 】を厳選してチェックします。\n",
+          f"⏰ 残り10分〜1時間未満の上位【 {len(target_items)} 件 】を厳選してチェックします。\n",
           flush=True,
       )
 
       if not target_items:
         print(
-            f"【{store_name}】に該当する未チェック商品（残り1時間未満）は見つかりませんでした。",
+            f"【{store_name}】に該当する未チェック商品（残り10分〜1時間未満）は見つかりませんでした。",
             flush=True,
         )
         continue
 
       for i, item in enumerate(target_items, 1):
-        print(
-            "────────────────────────────────────────",
-            flush=True,
-        )
+        print("────────────────────────────────────────", flush=True)
         print(
             f"[{store_name}] 【{i}/{len(target_items)}】残り時間:"
             f" {item['time']} | {item['title'][:25]}...",
