@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import warnings
 from io import BytesIO
 
 from bs4 import BeautifulSoup
@@ -12,6 +13,9 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 import requests
 
+# 警告ログの非表示化
+warnings.filterwarnings("ignore")
+
 # --------------------------------------------------
 # 1. 設定値・定数 & API設定
 # --------------------------------------------------
@@ -20,13 +24,20 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
+# 価格上限設定
 MAX_PRICE_LIMIT = 8000
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
+
+# 8,000円以下 × 終了が近い順 (s1=end, o1=a) × 100件一括取得
+URL_AUCTION = (
+    "https://auctions.yahoo.co.jp/search/search?"
+    f"p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
+)
 
 SEEN_FILE = "seen_items_yahoo.json"
-MAX_AUCTION_ITEMS = 100
 
-# 物理的破損・再生不能な状態のみ弾くNGリスト
+# 画像は目利き精度重視でしっかり5枚取得
+MAX_IMAGE_COUNT = 5
+
 NG_KEYWORDS = [
     "加水分解",
     "割れ",
@@ -59,7 +70,7 @@ def load_seen_items():
       with open(SEEN_FILE, "r", encoding="utf-8") as f:
         return set(json.load(f))
     except Exception as e:
-      print(f"⚠️ 既読ファイルの読み込みエラー: {e}")
+      print(f"⚠️ 既読ファイルの読み込みエラー: {e}", flush=True)
       return set()
   return set()
 
@@ -69,12 +80,12 @@ def save_seen_items(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
       json.dump(list(seen), f, ensure_ascii=False, indent=2)
   except Exception as e:
-    print(f"⚠️ 既読ファイルの保存エラー: {e}")
+    print(f"⚠️ 既読ファイルの保存エラー: {e}", flush=True)
 
 
 def send_discord_notification(item, g_result, seller_name):
   if not DISCORD_WEBHOOK_URL:
-    print("❌ Discord Webhook URLが未設定です")
+    print("❌ Discord Webhook URLが未設定です", flush=True)
     return
 
   risk_text = (
@@ -112,24 +123,26 @@ def send_discord_notification(item, g_result, seller_name):
         timeout=10,
     )
     if res.status_code in [200, 204]:
-      print(f"✅ Discord通知送信完了: {item['title'][:20]}")
+      print(f"✅ Discord通知送信完了: {item['title'][:20]}", flush=True)
     else:
-      print(f"❌ Discord通知エラー: {res.status_code}, {res.text}")
+      print(
+          f"❌ Discord通知エラー: {res.status_code}, {res.text}", flush=True
+      )
   except Exception as e:
-    print(f"❌ Discord送信例外: {e}")
+    print(f"❌ Discord送信例外: {e}", flush=True)
 
 
 # --------------------------------------------------
-# 3. Gemini 解析
+# 3. Gemini 解析処理
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
   if not client:
-    print("❌ Gemini APIキーが読み込めていません")
+    print("❌ Gemini APIキーが読み込めていません", flush=True)
     return None
 
   prompt = f"""
 あなたはG-SHOCKおよびブランドウォッチの転売・仕入れ目利き専門家です。
-添付された商品画像と商品タイトル・説明文を詳細に添削・解析し、社外品や偽物を排除した上で、電池交換や清掃を行って利益が見込めるか仕入れ判定を行ってください。
+添付された商品画像（最大5枚）と商品タイトル・説明文を詳細に添削・解析し、社外品や偽物を排除した上で、電池交換や清掃を行って利益が見込めるか仕入れ判定を行ってください。
 
 【査定方針】
 - 「電池切れ」「動作未確認」「ジャンク扱い」であっても、モジュール死の可能性が低く電池交換で稼働が見込める場合は前向きに評価してください。
@@ -175,20 +188,24 @@ def analyze_gshock_with_gemini(title, description, images, price):
   except APIError as e:
     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
       print(
-          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。"
+          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。",
+          flush=True,
       )
-      print("   以降の解析を中断し、スクリプトを安全に終了します。")
+      print(
+          "   以降の解析を中断し、スクリプトを安全に終了します。",
+          flush=True,
+      )
       return "QUOTA_EXCEEDED"
     else:
-      print(f"❌ Gemini APIエラー: {e}")
+      print(f"❌ Gemini APIエラー: {e}", flush=True)
       return None
   except Exception as e:
-    print(f"❌ Gemini解析例外: {e}")
+    print(f"❌ Gemini解析例外: {e}", flush=True)
     return None
 
 
 # --------------------------------------------------
-# 4. 詳細ページ情報・画像取得
+# 4. 詳細ページ情報・画像5枚取得
 # --------------------------------------------------
 def fetch_detail_page(page, url):
   page.goto(url, wait_until="domcontentloaded", timeout=15000)
@@ -213,7 +230,8 @@ def fetch_detail_page(page, url):
       if clean_url not in img_urls and not clean_url.endswith(".gif"):
         img_urls.append(clean_url)
 
-  img_urls = img_urls[:4]
+  # 画像はしっかり5枚取得
+  img_urls = img_urls[:MAX_IMAGE_COUNT]
 
   headers = {
       "User-Agent": (
@@ -235,17 +253,15 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. メイン処理（直前〜3時間の全時間帯対応）
+# 5. 一覧抽出 ＆ ピンポイント解析処理
 # --------------------------------------------------
-def process_auction_list(
-    page, target_url, max_limit, sale_type_label, seen_items
-):
-  print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
+def process_auction_list(page, target_url, sale_type_label, seen_items):
+  print(f"\n🔍 一覧ページ取得中 (8,000円以下・終了が近い順 100件): {target_url}", flush=True)
 
   try:
     page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
   except Exception as e:
-    print(f"❌ ページ移動エラー: {e}")
+    print(f"❌ ページ移動エラー: {e}", flush=True)
     return
 
   time.sleep(1)
@@ -255,18 +271,18 @@ def process_auction_list(
   items = soup.select("li.Product") or soup.select(".Product")
 
   if not items:
-    print("⚠️ 商品要素が見つかりませんでした。")
+    print("⚠️ 商品要素が見つかりませんでした。", flush=True)
     return
 
-  print(f"📦 検出件数: {len(items)}件（直前〜3時間の対象を精査）")
+  print(
+      f"📦 取得完了: {len(items)}件一覧から「5分〜59分」の対象を抽出します...",
+      flush=True,
+  )
 
-  processed_count = 0
+  target_items = []
 
+  # --- 【第1段階】一覧画面での高速フィルタリング ---
   for item in items:
-    if processed_count >= max_limit:
-      print(f"⏱️ 上限{max_limit}件に達したため完了。")
-      break
-
     title_tag = item.select_one(".Product__titleLink") or item.select_one("a")
     price_tag = item.select_one(".Product__priceValue") or item.select_one(
         "[class*='price']"
@@ -281,6 +297,7 @@ def process_auction_list(
       continue
     price = int(price_digits)
 
+    # 念のため価格上限チェック
     if price > MAX_PRICE_LIMIT:
       continue
 
@@ -293,7 +310,7 @@ def process_auction_list(
     if item_id in seen_items:
       continue
 
-    # --- 残り時間判定（秒〜3時間前まで対応） ---
+    # 残り時間判定
     time_tag = item.select_one(".Product__time") or item.select_one(
         "[class*='time']"
     )
@@ -303,65 +320,68 @@ def process_auction_list(
         else item.get_text(" ", strip=True)
     )
 
-    if "日" in time_text:
+    # 「日」や「時間」が含まれる場合は1時間以上確定なのでスルー
+    if "日" in time_text or "時間" in time_text:
       continue
 
     minutes_left = None
-
-    if "時間" in time_text:
-      hour_match = re.search(r"(\d+)\s*時間", time_text)
-      min_in_hour_match = re.search(r"(\d+)\s*分", time_text)
-
-      hours = int(hour_match.group(1)) if hour_match else 0
-      mins = int(min_in_hour_match.group(1)) if min_in_hour_match else 0
-
-      minutes_left = (hours * 60) + mins
-    elif "分" in time_text:
+    if "分" in time_text:
       min_match = re.search(r"(\d+)\s*分", time_text)
       if min_match:
         minutes_left = int(min_match.group(1))
-    elif "秒" in time_text:
-      minutes_left = 0  # 残り数秒〜数十秒
 
-    if minutes_left is None:
+    # ★ 残り「5分〜59分」のみ抽出（直前スナイプのターゲット層）
+    if minutes_left is None or not (5 <= minutes_left <= 59):
       continue
 
-    # ★ 0分（数秒前）〜180分（3時間前）まで許可
-    if not (0 <= minutes_left <= 180):
-      continue
-
-    time_left_str = (
-        f"{minutes_left // 60}時間{minutes_left % 60}分"
-        if minutes_left >= 60
-        else (f"{minutes_left}分" if minutes_left > 0 else "1分未満(直前)")
-    )
-
-    # タイトルの物理NGチェック（加水分解など）
+    # タイトルの物理NGチェック
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
-    processed_count += 1
+    target_items.append({
+        "id": item_id,
+        "title": title,
+        "price": price,
+        "url": url,
+        "time_left": f"{minutes_left}分",
+    })
+
+  print(
+      f"🎯 抽出成功: 該当商品 {len(target_items)}件（この商品のみ詳細解析します）",
+      flush=True,
+  )
+
+  # --- 【第2段階】抽出された本命商品のみ詳細取得 ＆ Gemini判定 ---
+  for idx, target in enumerate(target_items, 1):
     print(
-        f"🎯 解析対象 [{sale_type_label} {processed_count}/{max_limit}]:"
-        f" 残り{time_left_str} | 価格: {price}円 | {title[:30]}..."
+        f"\n[{idx}/{len(target_items)}] 🎯 解析中: 残り{target['time_left']} |"
+        f" 価格: {target['price']}円 | {target['title'][:30]}...",
+        flush=True,
     )
 
     try:
-      seller_name, description, images = fetch_detail_page(page, url)
+      seller_name, description, images = fetch_detail_page(page, target["url"])
 
-      text_to_check = f"{title} {description}".lower()
+      text_to_check = f"{target['title']} {description}".lower()
       found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
       if found_ng:
-        print(f"  ⏩ 本文NGワード検出のためスキップ: {', '.join(found_ng)}")
-        seen_items.add(item_id)
+        print(
+            f"  ⏩ 本文NGワード検出のためスキップ: {', '.join(found_ng)}",
+            flush=True,
+        )
+        seen_items.add(target["id"])
         save_seen_items(seen_items)
         continue
 
-      print("🤖 Geminiで仕入れ目利き試算中...")
-      g_result = analyze_gshock_with_gemini(title, description, images, price)
+      print(
+          f"🤖 Geminiで目利き試算中 (画像{len(images)}枚)...", flush=True
+      )
+      g_result = analyze_gshock_with_gemini(
+          target["title"], description, images, target["price"]
+      )
 
       if g_result == "QUOTA_EXCEEDED":
-        print("⛔ 制限のため処理をここで安全に停止します。")
+        print("⛔ API制限のため処理を安全に停止します。", flush=True)
         break
 
       if g_result:
@@ -373,37 +393,39 @@ def process_auction_list(
         except Exception:
           max_target = 0
 
-        if price >= max_target and max_target > 0:
+        if target["price"] >= max_target and max_target > 0:
           print(
-              f"  ⚠️ 赤字判定補正: 現在価格({price}円) >="
-              f" 推奨上限額({max_target}円)"
+              f"  ⚠️ 赤字判定補正: 現在価格({target['price']}円) >="
+              f" 推奨上限額({max_target}円)",
+              flush=True,
           )
           score = "C（不可）"
 
         print(
             f"  └ 最終判定: {score} | 純正性: {auth} | 推奨上限:"
-            f" {max_target}円"
+            f" {max_target}円",
+            flush=True,
         )
-        print(f"  └ 添削理由: {g_result.get('reasoning')}")
+        print(f"  └ 添削理由: {g_result.get('reasoning')}", flush=True)
 
         if "A" in score or "B" in score:
           item_data = {
-              "id": item_id,
-              "title": title,
-              "price": price,
+              "id": target["id"],
+              "title": target["title"],
+              "price": target["price"],
               "sale_type": sale_type_label,
-              "time_left": time_left_str,
-              "url": url,
+              "time_left": target["time_left"],
+              "url": target["url"],
           }
           send_discord_notification(item_data, g_result, seller_name)
         else:
-          print("  ⏩ スルー（利益なし/社外品/偽物疑い）")
+          print("  ⏩ スルー（利益なし/社外品/偽物疑い）", flush=True)
 
-      seen_items.add(item_id)
+      seen_items.add(target["id"])
       save_seen_items(seen_items)
 
     except Exception as e:
-      print(f"❌ 詳細解析エラー: {e}")
+      print(f"❌ 詳細解析エラー: {e}", flush=True)
 
     time.sleep(1)
 
@@ -412,7 +434,10 @@ def process_auction_list(
 # 6. メイン実行
 # --------------------------------------------------
 def main():
-  print("🚀 ヤフオク G-SHOCK仕入れリサーチ（直前〜3時間前対応）を開始します...")
+  print(
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（8,000円以下・5〜59分抽出・5枚解析版）を開始します...",
+      flush=True,
+  )
   seen_items = load_seen_items()
 
   with sync_playwright() as p:
@@ -433,17 +458,11 @@ def main():
     )
     page = context.new_page()
 
-    process_auction_list(
-        page,
-        URL_AUCTION,
-        MAX_AUCTION_ITEMS,
-        "ヤフオク(終了直前〜3時間前)",
-        seen_items,
-    )
+    process_auction_list(page, URL_AUCTION, "ヤフオク(残り5〜59分)", seen_items)
 
     browser.close()
 
-  print("\n✨ リサーチ処理が完了しました。")
+  print("\n✨ リサーチ処理が完了しました。", flush=True)
 
 
 if __name__ == "__main__":
