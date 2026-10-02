@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 import warnings
 from io import BytesIO
 
@@ -27,10 +28,15 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 価格上限設定
 MAX_PRICE_LIMIT = 8000
 
+# ★ 検索クエリ: G-SHOCK ＋ (ジャンク OR 電池切れ OR 不動 OR 動作未確認)
+# ヤフオクの検索構文: (A B C) でOR検索になります
+SEARCH_QUERY = "G-SHOCK (ジャンク 電池切れ 不動 動作未確認)"
+ENCODED_QUERY = urllib.parse.quote(SEARCH_QUERY)
+
 # ★ カテゴリ「23140（腕時計）」、現在価格上限8,000円、終了順指定、上位50件(n=50)
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
-    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=50"
+    f"p={ENCODED_QUERY}&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=50"
 )
 
 SEEN_FILE = "seen_items_yahoo.json"
@@ -38,7 +44,7 @@ SEEN_FILE = "seen_items_yahoo.json"
 # 画像取得枚数
 MAX_IMAGE_COUNT = 5
 
-# ★ リペアせどり用 必須キーワード（タイトルまたは本文に「いずれか」が含まれている必要がある）
+# ★ リペア必須キーワード（検索結果の取りこぼし防止・詳細本文での念押し確認用）
 REPAIR_REQUIRED_KEYWORDS = [
     "ジャンク",
     "電池切れ",
@@ -290,7 +296,7 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 def process_auction_list(page, target_url, sale_type_label, seen_items):
   print(
-      f"\n🔍 一覧ページ取得中 (腕時計・8000円以下・終了間近"
+      f"\n🔍 一覧ページ取得中 (リペアキーワード絞り込み・上限8000円・終了間近"
       f" 上位50件):\n {target_url}",
       flush=True,
   )
@@ -327,7 +333,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 
   items = items[:50]
   print(
-      f"📦 取得完了: 上位{len(items)}件からリペア対象（ジャンク・電池切れ等）をフィルタリングします...",
+      f"📦 取得完了: 上位{len(items)}件から「5分〜59分」の対象を抽出します...",
       flush=True,
   )
 
@@ -422,19 +428,6 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       seller_name, description, images = fetch_detail_page(page, target["url"])
       full_text = f"{target['title']} {description}".lower()
 
-      # ★ リペア必須キーワードチェック（タイトルか本文に「ジャンク」「電池切れ」等の記載が必要）
-      has_required_kw = any(
-          req.lower() in full_text for req in REPAIR_REQUIRED_KEYWORDS
-      )
-      if not has_required_kw:
-        print(
-            "  ⏩ リペア必須キーワード（ジャンク/電池切れ等）がないためスキップ",
-            flush=True,
-        )
-        seen_items.add(target["id"])
-        save_seen_items(seen_items)
-        continue
-
       # ★ 本文側でも稼働品・電池交換済み・パーツ単体キーワードを再チェック
       found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in full_text]
       if found_ng:
@@ -512,7 +505,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCKリペアせどり専用スクレイパーを開始します...",
+      "🚀 ヤフオク G-SHOCKリペアせどり専用スクレイパー（クエリ絞り込み＋上位50件版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
