@@ -27,10 +27,10 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 価格上限設定
 MAX_PRICE_LIMIT = 8000
 
-# ★ aucmax=8000 (8,000円以下) × 終了が近い順 (s1=end, o1=a) × 100件一括取得
+# ★ price_type=currentprice&max=8000 (現在価格8,000円以下) × 終了が近い順 (s1=end, o1=a) × 100件一括取得
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
-    f"p=G-SHOCK&aucmax={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
+    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
 )
 
 SEEN_FILE = "seen_items_yahoo.json"
@@ -257,8 +257,8 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 def process_auction_list(page, target_url, sale_type_label, seen_items):
   print(
-      f"\n🔍 一覧ページ取得中 (aucmax=8000上限・終了が近い順 100件):"
-      f" {target_url}",
+      f"\n🔍 一覧ページ取得中 (price_type=currentprice&max=8000上限・終了が近い順"
+      f" 100件):\n {target_url}",
       flush=True,
   )
 
@@ -301,7 +301,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       continue
     price = int(price_digits)
 
-    # 念のため価格上限チェック
+    # 念のためプログラム側でも8,000円以下を厳格チェック
     if price > MAX_PRICE_LIMIT:
       continue
 
@@ -334,7 +334,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
       if min_match:
         minutes_left = int(min_match.group(1))
 
-    # ★ 残り「5分〜59分」のみ抽出（直前スナイプのターゲット層）
+    # ★ 残り「5分〜59分」のみ抽出
     if minutes_left is None or not (5 <= minutes_left <= 59):
       continue
 
