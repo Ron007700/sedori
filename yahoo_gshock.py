@@ -27,10 +27,10 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 価格上限設定
 MAX_PRICE_LIMIT = 8000
 
-# ★ カテゴリをG-SHOCK本体(2084200000)に限定 ＆ 現在価格上限8,000円
+# ★ カテゴリを元の「23140（腕時計）」に戻し、現在価格上限8,000円＆終了順指定
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
-    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=2084200000&is_auction=1&s1=end&o1=a&n=100"
+    f"p=G-SHOCK&price_type=currentprice&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=100"
 )
 
 SEEN_FILE = "seen_items_yahoo.json"
@@ -38,10 +38,8 @@ SEEN_FILE = "seen_items_yahoo.json"
 # 画像取得枚数（目利き精度のため5枚）
 MAX_IMAGE_COUNT = 5
 
-# ★ テキスト側での除外は「本・カタログ・空箱」のみに最小化（取り逃し防止）
-# パーツ類（ベゼル/ベルト等）は画像解析（Gemini）で判定します。
+# ★ テキスト除外は「本・カタログ・空箱」のみ（取り逃し防止）
 NG_KEYWORDS = [
-    # 書籍・カタログ・空箱
     "カタログ",
     "雑誌",
     "BOOK",
@@ -128,7 +126,7 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini 解析処理（画像によるパーツ除外を最優先設定）
+# 3. Gemini 解析処理
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
   if not client:
@@ -141,7 +139,7 @@ def analyze_gshock_with_gemini(title, description, images, price):
 
 【最優先の画像判別ルール】
 - 添付画像を厳密に視覚確認してください。
-- 腕時計本体（文字盤・ケース・モジュールが存在するもの）が含まれず、**「ベゼル単体」「ベルト/バンド単体」「プロテクター単体」「アダプター単体」「コマのみ」「空箱/ケースのみ」などの部品・周辺パーツのみの出品であると画像で判断できる場合は、理由を問わず即座に condition_score を「C（不可）」** にしてください。
+- 腕時計本体（文字盤・ケース・モジュールが存在するもの）が含まれず、「ベゼル単体」「ベルト/バンド単体」「プロテクター単体」「アダプター単体」「コマのみ」「空箱/ケースのみ」などの部品・周辺パーツのみの出品であると画像で判断できる場合は、理由を問わず即座に condition_score を「C（不可）」にしてください。
 - 時計本体が出品されており、おまけや交換パーツとしてベゼル等が付属している場合は問題ありません。
 
 【その他の査定方針】
@@ -256,7 +254,7 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 def process_auction_list(page, target_url, sale_type_label, seen_items):
   print(
-      f"\n🔍 一覧ページ取得中 (G-SHOCKカテゴリ限定・上限8000円・終了間近"
+      f"\n🔍 一覧ページ取得中 (腕時計カテゴリ・上限8000円・終了間近"
       f" 100件):\n {target_url}",
       flush=True,
   )
@@ -312,7 +310,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     if item_id in seen_items:
       continue
 
-    # タイトルの書籍・箱NGチェックのみ（パーツ類は通過させて画像解析へ回す）
+    # 書籍・箱などの完全NGチェック
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
@@ -348,7 +346,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
     })
 
   print(
-      f"🎯 抽出成功: 該当商品 {len(target_items)}件（画像判定を含めて詳細解析します）",
+      f"🎯 抽出成功: 該当商品 {len(target_items)}件（詳細解析します）",
       flush=True,
   )
 
@@ -437,7 +435,7 @@ def process_auction_list(page, target_url, sale_type_label, seen_items):
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク G-SHOCK仕入れリサーチ（取り逃し防止・画像Visual識別強化版）を開始します...",
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（検索復旧・画像Visual識別強化版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
