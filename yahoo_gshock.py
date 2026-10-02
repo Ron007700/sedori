@@ -18,21 +18,18 @@ import requests
 API_KEY = os.environ.get("GEMINI_API_KEY")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-# APIキー未設定時でもクラッシュしない安全化
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
 # 検索上限価格
 MAX_PRICE_LIMIT = 8000
 
-# オークション専用URL（最高8,000円 / 競売のみ / 残り時間の短い順 / 上限20件表示 &n=20）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=20"
+# 検索URL（件数 n=50）
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=G-SHOCK&max={MAX_PRICE_LIMIT}&auccat=23140&is_auction=1&s1=end&o1=a&n=50"
 
 SEEN_FILE = "seen_items_yahoo.json"
+MAX_AUCTION_ITEMS = 50  # 精査件数上限
 
-# 件数上限（ヤフオクのみ最大20件）
-MAX_AUCTION_ITEMS = 20
-
-# ① 狙い目キーワード
+# 狙い目キーワード（「ソーラー」を除外し、コラボ・カラー・希少型番等を指定）
 TARGET_KEYWORDS = [
     "TWIN SENSOR",
     "TRIPLE SENSOR",
@@ -63,18 +60,10 @@ TARGET_KEYWORDS = [
     "ラバコレ",
     "イルクジ",
     "コラボ",
-    "タフソーラー",
-    "電波ソーラー",
-    "ソーラー",
 ]
 
-# ② NGキーワード（排除条件）
+# NGキーワード（「ジャンク・不動・未確認・充電不足」を除外し、致命的な物理破損のみ指定）
 NG_KEYWORDS = [
-    "CHG",
-    "充電不足",
-    "不動",
-    "ジャンク",
-    "動作未確認",
     "加水分解",
     "割れ",
     "ベタつき",
@@ -120,7 +109,6 @@ def save_seen_items(seen):
 
 
 def send_discord_notification(item, g_result, seller_name):
-  """Geminiの添削結果を含めてDiscordへ通知"""
   if not DISCORD_WEBHOOK_URL:
     print("❌ Discord Webhook URLが未設定です")
     return
@@ -142,7 +130,7 @@ def send_discord_notification(item, g_result, seller_name):
 🔗 **URL**: {item['url']}
 
 🏷️ **モデル特定**: {g_result.get('brand', 'CASIO')} / {g_result.get('model', '不明')}
-🛡️ **純正性判定**: {g_result.get('authenticity_status', '不明')}
+🛡 **純正性判定**: {g_result.get('authenticity_status', '不明')}
 📊 **総合評価**: **{g_result.get('condition_score', '-')}**
 🏷️ **状態・注記フラグ**: {risk_text}
 
@@ -169,37 +157,43 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # --------------------------------------------------
-# 3. Gemini 3.8 Flash による画像添削・真贋・相場推論
+# 3. Gemini による画像添削・真贋・相場推論
 # --------------------------------------------------
 def analyze_gshock_with_gemini(title, description, images, price):
   if not client:
     print("❌ Gemini APIキーが読み込めていません")
     return None
 
+  # ★ 更新: タフソーラー/電波ソーラー機のメンテ代（二次電池1200円）をプロンプトへ追加
   prompt = f"""
 あなたはG-SHOCKおよびブランドウォッチの転売・仕入れ目利き専門家です。
-添付された商品画像と商品タイトル・説明文を詳細に添削・解析し、社外品や偽物を排除した上で、利益が見込めるか仕入れ判定を行ってください。
+添付された商品画像と商品タイトル・説明文を詳細に添削・解析し、社外品や偽物を排除した上で、電池交換や清掃を行って利益が見込めるか仕入れ判定を行ってください。
 
-【厳格排除ルール：社外品・MOD・偽物の排除】
-- 社外パーツ・不審点のチェック：社外メタルベゼル、社外ベゼル/ベルト（ベゼル刻印のフォント違和感・粗悪印刷）、カスタムMOD品でないか画像で厳密に確認。
-- 偽物チェック：裏蓋刻印の浅さ、ボタンの配置・形状違和感、液晶表示の不自然さをチェック。
-- 社外パーツ使用（純正でない）や偽物の疑いがある場合は、判定を「C（不可）」にしてください。
+【査定方針】
+- 「電池切れ」「動作未確認」「ジャンク扱い」であっても、モジュール死の可能性が低く電池交換で稼働が見込める場合は前向きに評価してください。
+- ただし、社外パーツ（メタルベゼル等）やMOD品、偽物の疑いがある場合は判定を「C（不可）」にしてください。
 
-【利益判定の徹底】
+【メンテコスト計算の基準】
+- 手数料10%、送料梱包代450円、仕入れ送料990円を一律コストとします。
+- 電池/メンテナンス費用:
+  ・通常の電池式（クォーツ）モデル: 200円
+  ・タフソーラー / 電波ソーラーモデル: 二次電池交換代として【 1,200円 】で計算してください。
+
+【利益判定】
 - 現在の出品価格は【 {price} 円 】です。
-- 手数料10%、送料梱包代450円、仕入れ送料990円を一律コストとし、仕入れ推奨上限額を計算してください。
-- 現在価格（{price}円）が推奨上限額を超えている場合、または利益が出ない（赤字）場合は、絶対に「C（不可）」と判定してください。
+- 上記コストを引いた上で推奨仕入れ上限額（max_bid_price_target）を算出してください。
+- 現在価格（{price}円）が推奨上限額を超えている場合、または利益が出ない（赤字）場合は「C（不可）」と判定してください。
 
 以下のJSON形式でのみ回答してください：
 {{
   "brand": "CASIO",
   "model": "型番（例: DW-6900B-9 / GW-M5610等）",
   "authenticity_status": "純正品 / 社外パーツあり / 偽物・MODの疑い",
-  "risk_flags": ["目立つキズなし", "小傷あり", "純正パーツ" などの状態フラグ],
+  "risk_flags": ["電池切れ疑い", "ソーラー機（二次電池想定）", "外観小傷あり", "純正パーツ" などの状態フラグ],
   "condition_score": "A（推奨） / B（慎重） / C（不可）",
   "estimated_resale_normal": 8500,
   "max_bid_price_target": 5500,
-  "reasoning": "真贋・社外品チェック・外観状態の添削理由（100文字以内）"
+  "reasoning": "電池交換稼働見込み・真贋・外観状態の添削理由（100文字以内）"
 }}
 
 【商品タイトル】: {title}
@@ -279,7 +273,7 @@ def fetch_detail_page(page, url):
 
 
 # --------------------------------------------------
-# 5. 商品処理のメイン関数（ヤフオク限定 / 残り10分〜59分判定）
+# 5. 商品処理のメイン関数（10分〜3時間判定）
 # --------------------------------------------------
 def process_auction_list(
     page, target_url, max_limit, sale_type_label, seen_items
@@ -302,7 +296,7 @@ def process_auction_list(
     print("⚠️ 商品要素が見つかりませんでした。")
     return
 
-  print(f"📦 検出件数: {len(items)}件（残り10〜59分の対象を精査）")
+  print(f"📦 検出件数: {len(items)}件（残り10分〜3時間の対象を精査）")
 
   processed_count = 0
 
@@ -325,7 +319,6 @@ def process_auction_list(
       continue
     price = int(price_digits)
 
-    # 【価格ガード】8,000円超の広告・ストア商品は除外
     if price > MAX_PRICE_LIMIT:
       continue
 
@@ -335,11 +328,10 @@ def process_auction_list(
       match = re.search(r"/auction/([a-zA-Z0-9]+)", url)
       item_id = match.group(1) if match else url
 
-    # 既読スキップ
     if item_id in seen_items:
       continue
 
-    # 残り時間チェック（10分〜59分以内か）
+    # 残り時間チェック（10分〜3時間 以内か判定）
     time_tag = item.select_one(".Product__time") or item.select_one(
         "[class*='time']"
     )
@@ -349,26 +341,41 @@ def process_auction_list(
         else item.get_text(" ", strip=True)
     )
 
-    if "日" in time_text or "時間" in time_text:
+    if "日" in time_text:
       continue
 
-    min_match = re.search(r"(\d+)\s*分", time_text)
-    if not min_match:
+    minutes_left = None
+
+    if "時間" in time_text:
+      hour_match = re.search(r"(\d+)\s*時間", time_text)
+      min_in_hour_match = re.search(r"(\d+)\s*分", time_text)
+
+      hours = int(hour_match.group(1)) if hour_match else 0
+      mins = int(min_in_hour_match.group(1)) if min_in_hour_match else 0
+
+      minutes_left = (hours * 60) + mins
+    else:
+      min_match = re.search(r"(\d+)\s*分", time_text)
+      if min_match:
+        minutes_left = int(min_match.group(1))
+
+    if minutes_left is None:
       continue
 
-    minutes_left = int(min_match.group(1))
-
-    # ★ 10分〜59分前のみを対象（10分未満は除外）
-    if not (10 <= minutes_left < 60):
+    if not (10 <= minutes_left <= 180):
       continue
 
-    time_left_str = f"{minutes_left}分"
+    time_left_str = (
+        f"{minutes_left // 60}時間{minutes_left % 60}分"
+        if minutes_left >= 60
+        else f"{minutes_left}分"
+    )
 
-    # ① NGキーワードチェック（タイトル）
+    # NGキーワードチェック（タイトル）
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
-    # ② ターゲットキーワードのチェック
+    # ターゲットキーワードチェック
     matched_keyword = None
     for kw in TARGET_KEYWORDS:
       if kw.lower() in title.lower():
@@ -385,7 +392,6 @@ def process_auction_list(
         f" {title[:25]}..."
     )
 
-    # ③ 詳細ページ取得＆Gemini解析
     try:
       seller_name, description, images = fetch_detail_page(page, url)
 
@@ -397,7 +403,7 @@ def process_auction_list(
         save_seen_items(seen_items)
         continue
 
-      print("🤖 Gemini 3.8 Flashで目利き試算中...")
+      print("🤖 Geminiで仕入れ目利き試算中...")
       g_result = analyze_gshock_with_gemini(title, description, images, price)
 
       if g_result == "QUOTA_EXCEEDED":
@@ -413,10 +419,9 @@ def process_auction_list(
         except Exception:
           max_target = 0
 
-        # 【強固な利益ガード】現在価格が「推奨上限額」以上の場合は不合格に補正
         if price >= max_target and max_target > 0:
           print(
-              f"  ⚠️ 赤字判定補正: 現在価格({price}円) >="
+              f"  ⚠️️ 赤字判定補正: 現在価格({price}円) >="
               f" 推奨上限額({max_target}円)"
           )
           score = "C（不可）"
@@ -427,7 +432,6 @@ def process_auction_list(
         )
         print(f"  └ 添削理由: {g_result.get('reasoning')}")
 
-        # 判定が A または B のみ Discord通知
         if "A" in score or "B" in score:
           item_data = {
               "id": item_id,
@@ -455,7 +459,9 @@ def process_auction_list(
 # 6. メイン実行処理
 # --------------------------------------------------
 def main():
-  print("🚀 ヤフオク G-SHOCK仕入れリサーチ（オークション限定20件）を開始します...")
+  print(
+      "🚀 ヤフオク G-SHOCK仕入れリサーチ（50件/10分〜3時間）を開始します..."
+  )
   seen_items = load_seen_items()
 
   with sync_playwright() as p:
@@ -480,13 +486,13 @@ def main():
         page,
         URL_AUCTION,
         MAX_AUCTION_ITEMS,
-        "ヤフオク(終了10〜59分前)",
+        "ヤフオク(終了10分〜3時間前)",
         seen_items,
     )
 
     browser.close()
 
-  print("\n✨ すべてのリサーチが正常に完了しました。")
+  print("\n✨ リサーチ処理が完了しました。")
 
 
 if __name__ == "__main__":
