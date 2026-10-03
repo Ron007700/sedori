@@ -24,7 +24,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
-MIN_PRICE_LIMIT = 1000   # 最低価格（ジャンク雑貨排除）
+MIN_PRICE_LIMIT = 1000  # 最低価格
 MAX_PRICE_LIMIT = 10000  # 最高価格
 
 SEEN_FILE = "seen_quartz.json"
@@ -54,19 +54,40 @@ BRANDS = [
     "グッチ",
 ]
 
-# ★ 検索時マイナス検索クエリ（ノイズ・まとめ売りの完全排除）
-EXCLUDE_QUERY = "-まとめ -セット -大量 -山 -まとめ売り -福袋 -オマージュ -コピー -風 -互換"
+# ★ 検索時マイナス検索クエリ（ヒット率重視でシンプルに調整）
+EXCLUDE_QUERY = "-まとめ -セット"
 
-# ★ Python側での強力除外キーワード（レディース・置き時計・パーツ等）
+# ★ Python側での強力除外キーワード
 NG_KEYWORDS = [
     # 機械・壊れすぎリスク
-    "液漏れ", "錆", "サビ", "リューズ破損", "リューズ動かない",
-    "針外れ", "ガラス割れ", "風防割れ", "オーバーホール前提", "OH前提",
-    "パーツ取り", "コピー", "偽物",
+    "液漏れ",
+    "錆",
+    "サビ",
+    "リューズ破損",
+    "リューズ動かない",
+    "針外れ",
+    "ガラス割れ",
+    "風防割れ",
+    "オーバーホール前提",
+    "OH前提",
+    "パーツ取り",
+    "コピー",
+    "偽物",
     # リセール単価が低い/対象外カテゴリ
-    "レディース", "ウィメンズ", "女性", "キッズ", "子供",
-    "掛け時計", "置時計", "クロック", "目覚まし",
-    "ベルトのみ", "コマ", "空箱", "尾錠", "ケースのみ", "ジャンク品" # 単体ジャンクの重複表現対策
+    "レディース",
+    "ウィメンズ",
+    "女性",
+    "キッズ",
+    "子供",
+    "掛け時計",
+    "置時計",
+    "クロック",
+    "目覚まし",
+    "ベルトのみ",
+    "コマ",
+    "空箱",
+    "尾錠",
+    "ケースのみ",
 ]
 
 
@@ -141,7 +162,7 @@ def send_discord_notification(item, g_result, seller_name):
 
 
 # ==================================================
-# 3. Gemini 解析 (429エラーハンドリング付き)
+# 3. Gemini 解析
 # ==================================================
 def analyze_quartz_with_gemini(title, description, images, price):
   if not client:
@@ -191,8 +212,14 @@ def analyze_quartz_with_gemini(title, description, images, price):
 
   except APIError as e:
     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-      print("⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。", flush=True)
-      print("   以降の解析を中断し、スクリプトを安全に終了します。", flush=True)
+      print(
+          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。",
+          flush=True,
+      )
+      print(
+          "   以降の解析を中断し、スクリプトを安全に終了します。",
+          flush=True,
+      )
       return "QUOTA_EXCEEDED"
     else:
       print(f"❌ Gemini APIエラー: {e}", flush=True)
@@ -212,10 +239,14 @@ def fetch_detail_page(page, url):
   html = page.content()
   soup = BeautifulSoup(html, "html.parser")
 
-  seller_tag = soup.select_one(".Seller__name, .Seller__link, [class*='Seller']")
+  seller_tag = soup.select_one(
+      ".Seller__name, .Seller__link, [class*='Seller']"
+  )
   seller_name = seller_tag.get_text(strip=True) if seller_tag else "不明出品者"
 
-  desc_tag = soup.select_one(".ProductExplanation__commentArea, .ProductExplanation")
+  desc_tag = soup.select_one(
+      ".ProductExplanation__commentArea, .ProductExplanation"
+  )
   description = desc_tag.get_text(strip=True) if desc_tag else "説明文なし"
 
   img_urls = []
@@ -248,16 +279,29 @@ def fetch_detail_page(page, url):
 
 
 # ==================================================
-# 5. ブランド別巡回・精査処理（残り10分〜3時間対象）
+# 5. ブランド別巡回・精査処理
 # ==================================================
 def process_brand_query(page, brand, seen_items):
   search_phrase = f"{brand} クォーツ ジャンク {EXCLUDE_QUERY}"
-  encoded_kw = requests.utils.quote(search_phrase)
 
-  # メンズ腕時計カテゴリ（23140）+ 1,000円〜10,000円 + 残り時間の短い順（s1=end&o1=a）
-  target_url = f"https://auctions.yahoo.co.jp/search/search?p={encoded_kw}&category_id=23140&min={MIN_PRICE_LIMIT}&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=50"
+  params = {
+      "p": search_phrase,
+      "category_id": "23140",
+      "min": str(MIN_PRICE_LIMIT),
+      "max": str(MAX_PRICE_LIMIT),
+      "is_auction": "1",
+      "s1": "end",
+      "o1": "a",
+      "n": "50",
+  }
+
+  query_string = "&".join(
+      [f"{k}={requests.utils.quote(v)}" for k, v in params.items()]
+  )
+  target_url = f"https://auctions.yahoo.co.jp/search/search?{query_string}"
 
   print(f"\n🔍 検索ブランド: 【{brand}】へアクセス中...", flush=True)
+  print(f"🔗 実行URL: {target_url}", flush=True)
 
   try:
     page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
@@ -275,7 +319,6 @@ def process_brand_query(page, brand, seen_items):
     print("  ⚠️ 対象商品が見つかりませんでした。", flush=True)
     return True
 
-  # 上位20件をスキャン対象とする
   items = items[:MAX_ITEMS_PER_BRAND]
   print(f"📦 【{brand}】の上位{len(items)}件をスキャン中...", flush=True)
 
@@ -288,7 +331,9 @@ def process_brand_query(page, brand, seen_items):
     title = title_tag.get_text(strip=True)
     url = title_tag.get("href", "")
 
-    price_tag = item.select_one(".Product__priceValue") or item.select_one("[class*='price']")
+    price_tag = item.select_one(".Product__priceValue") or item.select_one(
+        "[class*='price']"
+    )
     if not price_tag:
       continue
     price_digits = re.sub(r"[^\d]", "", price_tag.get_text(strip=True))
@@ -296,8 +341,14 @@ def process_brand_query(page, brand, seen_items):
       continue
     price = int(price_digits)
 
-    time_tag = item.select_one(".Product__time") or item.select_one("[class*='time']")
-    time_text = time_tag.get_text(strip=True) if time_tag else item.get_text(" ", strip=True)
+    time_tag = item.select_one(".Product__time") or item.select_one(
+        "[class*='time']"
+    )
+    time_text = (
+        time_tag.get_text(strip=True)
+        if time_tag
+        else item.get_text(" ", strip=True)
+    )
 
     item_id = item.get("data-auction-id")
     if not item_id and url:
@@ -307,13 +358,10 @@ def process_brand_query(page, brand, seen_items):
     if item_id in seen_items:
       continue
 
-    # ★ フィルター1: 「日」が含まれるものは即スキップ（1日以上の残り時間）
     if "日" in time_text:
       continue
 
     minutes_left = None
-
-    # 残り時間表現のパース（「1時間20分」「45分」など）
     hour_match = re.search(r"(\d+)時間(?:(\d+)分)?", time_text)
     min_match = re.search(r"^(\d+)分|[\s](\d+)分|(\d+)分", time_text)
 
@@ -322,11 +370,9 @@ def process_brand_query(page, brand, seen_items):
       mins = int(hour_match.group(2)) if hour_match.group(2) else 0
       minutes_left = hours * 60 + mins
     elif min_match:
-      # 該当するマッチグループを取得
       mins_val = next(g for g in min_match.groups() if g is not None)
       minutes_left = int(mins_val)
 
-    # ★ フィルター2: 残り時間が「10分〜180分（10分前〜3時間未満）」以外はスキップ
     if minutes_left is None or not (10 <= minutes_left < 180):
       continue
 
@@ -335,25 +381,26 @@ def process_brand_query(page, brand, seen_items):
     else:
       time_left_str = f"{minutes_left}分"
 
-    # タイトルのNGワードチェック
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
 
-    # --- 条件クリア：精査ターゲット検知 ---
     processed_count += 1
     print(
-        f"\n🎯 ターゲット検知 [{processed_count}件目]: 残り{time_left_str} | {price}円 | {title[:25]}...",
+        f"\n🎯 ターゲット検知 [{processed_count}件目]:"
+        f" 残り{time_left_str} | {price}円 | {title[:25]}...",
         flush=True,
     )
 
     try:
       seller_name, description, images = fetch_detail_page(page, url)
 
-      # 本文も含めたNGワード最終チェック
       text_to_check = f"{title} {description}".lower()
       found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
       if found_ng:
-        print(f"  ⏩ 本文NGワードのためスキップ: {', '.join(found_ng)}", flush=True)
+        print(
+            f"  ⏩ 本文NGワードのためスキップ: {', '.join(found_ng)}",
+            flush=True,
+        )
         seen_items.add(item_id)
         save_seen_items(seen_items)
         continue
@@ -375,12 +422,12 @@ def process_brand_query(page, brand, seen_items):
         except Exception:
           max_target = 0
 
-        # 赤字・利益未達の判定補正
         if price >= max_target or profit < 2000 or margin < 25.0:
           score = "C（不可）"
 
         print(
-            f"  └ 判定: {score} | 想定利益: {profit}円 ({margin}%) | 推奨上限: {max_target}円",
+            f"  └ 判定: {score} | 想定利益: {profit}円 ({margin}%) | 推奨上限:"
+            f" {max_target}円",
             flush=True,
         )
         print(f"  └ 理由: {g_result.get('reasoning')}", flush=True)
@@ -413,7 +460,11 @@ def process_brand_query(page, brand, seen_items):
 # 6. メイン実行処理
 # ==================================================
 def main():
-  print("🚀 ヤフオク クォーツジャンク高利益リサーチ（ブランド順巡回・10分〜3時間版）を開始します...", flush=True)
+  print(
+      "🚀 ヤフオク"
+      " クォーツジャンク高利益リサーチ（ブランド順巡回・10分〜3時間版）を開始します...",
+      flush=True,
+  )
   seen_items = load_seen_items()
 
   with sync_playwright() as p:
