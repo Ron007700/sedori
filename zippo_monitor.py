@@ -24,13 +24,13 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 検索上限価格（3,000円以下）
 MAX_PRICE_LIMIT = 3000
 
-# オークション専用URL（最高3,000円 / 競売のみ / 残り時間の短い順 / 上限20件表示 &n=20）
-URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&max={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=20"
+# ★ 件数上限を30件に変更
+MAX_AUCTION_ITEMS = 30
+
+# ★ オークション専用URL（aucmaxpriceへの修正と &n=50 で30件分を確実に取得）
+URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&aucmaxprice={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=50"
 
 SEEN_FILE = "seen_zippo.json"
-
-# 件数上限（ヤフオクのみ最大20件）
-MAX_AUCTION_ITEMS = 20
 
 TARGET_KEYWORDS = [
     "STERLING",
@@ -104,7 +104,7 @@ def save_seen_items(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
       json.dump(list(seen), f, ensure_ascii=False, indent=2)
   except Exception as e:
-    print(f"⚠️ 既読ファイルの保存エラー: {e}")
+    print(f"⚠️️ 既読ファイルの保存エラー: {e}")
 
 
 def send_discord_notification(item, g_result, seller_name):
@@ -132,7 +132,7 @@ def send_discord_notification(item, g_result, seller_name):
 🔢 **シリアル/限定**: {g_result.get('serial_or_edition', 'なし/不明')}
 🔍 **底面刻印(ボトム)**: {g_result.get('bottom_stamp', '確認不可')}
 📊 **総合評価**: **{g_result.get('condition_score', '-')}**
-⚠️️ **状態フラグ**: {risk_text}
+⚠ **状態フラグ**: {risk_text}
 
 💵 **想定売価**: {g_result.get('estimated_resale_normal', '-')}円
 🎯 **推奨購入上限額**: **{g_result.get('max_bid_price_target', '-')}円**
@@ -296,7 +296,7 @@ def process_auction_list(
     print("⚠️ 商品要素が見つかりませんでした。")
     return
 
-  print(f"📦 検出件数: {len(items)}件 (精査開始)")
+  print(f"📦 検出件数: {len(items)}件 (最大{max_limit}件精査開始)")
 
   processed_count = 0
 
@@ -440,7 +440,7 @@ def process_auction_list(
 # --------------------------------------------------
 def main():
   print(
-      "🚀 ヤフオク ZIPPO仕入れリサーチ（オークション限定20件）を開始します..."
+      f"🚀 ヤフオク ZIPPO仕入れリサーチ（オークション限定{MAX_AUCTION_ITEMS}件）を開始します..."
   )
   seen_items = load_seen_items()
 
