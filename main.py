@@ -86,10 +86,10 @@ def send_discord_notify(store_name, item, result, current_price=0):
 ⏰ **残り時間**: {item['time']}
 🔗 **URL**: {item['url']}
 
-🏷️️ **ブランド/型番**: {result.get('brand', '不明')} / {result.get('model', '不明')}
+🏷 **ブランド/型番**: {result.get('brand', '不明')} / {result.get('model', '不明')}
 📊 **評価**: **{result.get('condition_score', '-')}**
 💰 **稼働時想定売価**: {result.get('estimated_resale_normal', '-')}円
-⚠️️ **ジャンク時想定売価**: {result.get('estimated_resale_junk', '-')}円
+⚠ **ジャンク時想定売価**: {result.get('estimated_resale_junk', '-')}円
 🎯 **推奨落札上限 (目標利益確保)**: **{result.get('max_bid_price_target', '-')}円**
 🛡️ **ジャンク防衛ライン (利益±0)**: {result.get('max_bid_price_break_even', '-')}円
 💡 **理由・状態感**: {result.get('reasoning', '-')}
@@ -369,7 +369,7 @@ def main():
       store_name = store["name"]
       seller_id = store["id"]
 
-      # is_auction=1 (ヤフオクのオークション形式限定)
+      # ★ 修正箇所: s1=end&o1=a を付与して「残り時間の短い順」で取得
       target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=22&is_auction=1&s1=end&o1=a"
 
       print("\n========================================", flush=True)
