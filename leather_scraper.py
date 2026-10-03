@@ -26,7 +26,7 @@ MIN_PRICE_LIMIT = 1000   # 下限価格（1,000円）
 MAX_PRICE_LIMIT = 10000  # 上限価格（10,000円）
 MAX_AUCTION_ITEMS = 30   # 1回の巡回でチェックする上限件数
 
-# ヤフオク検索キーワード（「スレ」のみに設定）
+# ヤフオク検索キーワード（「スレ」のみ）
 SEARCH_QUERIES = [
     "スレ",
 ]
@@ -173,7 +173,7 @@ def analyze_leather_with_gemini(title, description, images, price):
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=images + [prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json", temperature=0.1
@@ -244,14 +244,14 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 def process_auction_list(page, query, max_limit, seen_items):
     # auccat=23004 : ファッション小物
+    # aucminprice=1000&aucmaxprice=10000 : 1,000円〜10,000円
     # s1=end&o1=a : 残り時間の短い順
-    # min=1000, max=10000 : 1,000円〜10,000円
     target_url = (
         f"https://auctions.yahoo.co.jp/search/search?"
         f"p={requests.utils.quote(query)}"
         f"&auccat=23004"
-        f"&min={MIN_PRICE_LIMIT}"
-        f"&max={MAX_PRICE_LIMIT}"
+        f"&aucminprice={MIN_PRICE_LIMIT}"
+        f"&aucmaxprice={MAX_PRICE_LIMIT}"
         f"&s1=end&o1=a"
         f"&n=50"
     )
