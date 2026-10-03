@@ -24,37 +24,42 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
-MIN_PRICE_LIMIT = 1000  # 最低価格
-MAX_PRICE_LIMIT = 10000  # 最高価格
-
 SEEN_FILE = "seen_quartz.json"
 MAX_ITEMS_PER_BRAND = 20  # 各ブランド上位20件をスキャン
 
-# ★ 巡回対象のブランド・メーカーリスト
-BRANDS = [
-    "SEIKO",
-    "セイコー",
-    "CITIZEN",
-    "シチズン",
-    "CASIO",
-    "カシオ",
-    "HAMILTON",
-    "ハミルトン",
-    "BURBERRY",
-    "バーバリー",
-    "DIESEL",
-    "ディーゼル",
-    "NIXON",
-    "ニクソン",
-    "TISSOT",
-    "ティソ",
-    "TAG HEUER",
-    "タグホイヤー",
-    "GUCCI",
-    "グッチ",
-]
+# ★ ブランド別の検索条件設定 (最低価格, 最高価格)
+# ブランドごとに相場に合わせた仕入れ上限を設定し、無駄なスキャンを防ぎます
+BRAND_CONFIG = {
+    # 高価格・高利益狙いブランド
+    "SEIKO": (1000, 10000),
+    "セイコー": (1000, 10000),
+    "HAMILTON": (1000, 12000),
+    "ハミルトン": (1000, 12000),
+    "TAG HEUER": (2000, 15000),
+    "タグホイヤー": (2000, 15000),
+    "GUCCI": (1000, 10000),
+    "グッチ": (1000, 10000),
+    # 定番・標準ブランド
+    "CITIZEN": (1000, 8000),
+    "シチズン": (1000, 8000),
+    "CASIO": (1000, 6000),
+    "カシオ": (1000, 6000),
+    "BURBERRY": (1000, 8000),
+    "バーバリー": (1000, 8000),
+    "TISSOT": (1000, 8000),
+    "ティソ": (1000, 8000),
+    # 安価・低単価ブランド（上限を低めに設定）
+    "NIXON": (1000, 4000),
+    "ニクソン": (1000, 4000),
+    "DIESEL": (1000, 5000),
+    "ディーゼル": (1000, 5000),
+}
 
-# ★ 検索時マイナス検索クエリ（ヒット率重視でシンプルに調整）
+# デフォルト価格帯（設定がないブランド用）
+DEFAULT_MIN_PRICE = 1000
+DEFAULT_MAX_PRICE = 10000
+
+# ★ 検索時マイナス検索クエリ（ヒット率重視でシンプルに）
 EXCLUDE_QUERY = "-まとめ -セット"
 
 # ★ Python側での強力除外キーワード
@@ -282,13 +287,19 @@ def fetch_detail_page(page, url):
 # 5. ブランド別巡回・精査処理
 # ==================================================
 def process_brand_query(page, brand, seen_items):
+  # ブランドに応じた下限・上限価格の取得
+  min_price, max_price = BRAND_CONFIG.get(
+      brand, (DEFAULT_MIN_PRICE, DEFAULT_MAX_PRICE)
+  )
+
   search_phrase = f"{brand} クォーツ ジャンク {EXCLUDE_QUERY}"
 
+  # ★ ヤフオク最新の価格パラメータ (aucminprice / aucmaxprice) を適用
   params = {
       "p": search_phrase,
       "category_id": "23140",
-      "min": str(MIN_PRICE_LIMIT),
-      "max": str(MAX_PRICE_LIMIT),
+      "aucminprice": str(min_price),  # 価格下限
+      "aucmaxprice": str(max_price),  # 価格上限
       "is_auction": "1",
       "s1": "end",
       "o1": "a",
@@ -300,7 +311,10 @@ def process_brand_query(page, brand, seen_items):
   )
   target_url = f"https://auctions.yahoo.co.jp/search/search?{query_string}"
 
-  print(f"\n🔍 検索ブランド: 【{brand}】へアクセス中...", flush=True)
+  print(
+      f"\n🔍 検索ブランド: 【{brand}】({min_price}円〜{max_price}円) へアクセス中...",
+      flush=True,
+  )
   print(f"🔗 実行URL: {target_url}", flush=True)
 
   try:
@@ -462,7 +476,7 @@ def process_brand_query(page, brand, seen_items):
 def main():
   print(
       "🚀 ヤフオク"
-      " クォーツジャンク高利益リサーチ（ブランド順巡回・10分〜3時間版）を開始します...",
+      " クォーツジャンク高利益リサーチ（価格制御・10分〜3時間版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
@@ -485,7 +499,7 @@ def main():
     )
     page = context.new_page()
 
-    for brand in BRANDS:
+    for brand in BRAND_CONFIG.keys():
       success = process_brand_query(page, brand, seen_items)
       if not success:
         break
