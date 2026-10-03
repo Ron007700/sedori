@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import warnings
 from io import BytesIO
 
 from bs4 import BeautifulSoup
@@ -11,6 +12,9 @@ from google.genai.errors import APIError
 from PIL import Image
 from playwright.sync_api import sync_playwright
 import requests
+
+# 警告ログの非表示化
+warnings.filterwarnings("ignore")
 
 # ==================================================
 # 1. 環境変数からの設定読み込み & ストア設定
@@ -43,7 +47,7 @@ def load_seen_items():
       with open(SEEN_FILE, "r", encoding="utf-8") as f:
         return set(json.load(f))
     except Exception as e:
-      print(f"⚠️️ 既読ファイルの読み込みエラー: {e}")
+      print(f"⚠️ 既読ファイルの読み込みエラー: {e}", flush=True)
       return set()
   return set()
 
@@ -53,7 +57,7 @@ def save_seen_items(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
       json.dump(list(seen), f, ensure_ascii=False, indent=2)
   except Exception as e:
-    print(f"⚠️ 既読ファイルの保存エラー: {e}")
+    print(f"⚠️ 既読ファイルの保存エラー: {e}", flush=True)
 
 
 def parse_price(price_val):
@@ -65,7 +69,10 @@ def parse_price(price_val):
 
 def send_discord_notify(store_name, item, result, current_price=0):
   if not DISCORD_WEBHOOK_URL:
-    print("⚠️ DISCORD_WEBHOOK_URLが未設定のため、通知をスキップします。")
+    print(
+        "⚠️ DISCORD_WEBHOOK_URLが未設定のため、通知をスキップします。",
+        flush=True,
+    )
     return
 
   price_str = f"{current_price:,}円" if current_price > 0 else "不明"
@@ -79,10 +86,10 @@ def send_discord_notify(store_name, item, result, current_price=0):
 ⏰ **残り時間**: {item['time']}
 🔗 **URL**: {item['url']}
 
-🏷️ **ブランド/型番**: {result.get('brand', '不明')} / {result.get('model', '不明')}
+🏷️️ **ブランド/型番**: {result.get('brand', '不明')} / {result.get('model', '不明')}
 📊 **評価**: **{result.get('condition_score', '-')}**
 💰 **稼働時想定売価**: {result.get('estimated_resale_normal', '-')}円
-⚠️ **ジャンク時想定売価**: {result.get('estimated_resale_junk', '-')}円
+⚠️️ **ジャンク時想定売価**: {result.get('estimated_resale_junk', '-')}円
 🎯 **推奨落札上限 (目標利益確保)**: **{result.get('max_bid_price_target', '-')}円**
 🛡️ **ジャンク防衛ライン (利益±0)**: {result.get('max_bid_price_break_even', '-')}円
 💡 **理由・状態感**: {result.get('reasoning', '-')}
@@ -98,15 +105,17 @@ def send_discord_notify(store_name, item, result, current_price=0):
         timeout=10,
     )
     if res.status_code in [200, 204]:
-      print(f"✅ Discord通知送信完了: {item['title'][:20]}")
+      print(f"✅ Discord通知送信完了: {item['title'][:20]}", flush=True)
     else:
-      print(f"❌ Discord通知エラー: {res.status_code}, {res.text}")
+      print(
+          f"❌ Discord通知エラー: {res.status_code}, {res.text}", flush=True
+      )
   except Exception as e:
-    print(f"❌ Discord通知例外: {e}")
+    print(f"❌ Discord通知例外: {e}", flush=True)
 
 
 # ==================================================
-# 3. リスト取得（ヤフオク限定・残り10分〜59分前・全件取得）
+# 3. リスト取得（ヤフオク限定・残り3時間未満・全件取得）
 # ==================================================
 def get_urgent_auction_urls(page, store_name, search_url, seen_items):
   print(
@@ -127,7 +136,6 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
 
   for a in soup.find_all("a", href=True):
     href = a["href"]
-    # ヤフオクのオークション詳細URLのみを抽出
     if "/auction/" in href:
       clean_url = href.split("?")[0]
       if not clean_url.startswith("http"):
@@ -142,37 +150,52 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
       parent = a.find_parent(["li", "div", "article"])
       parent_text = parent.get_text(" ", strip=True) if parent else ""
 
-      # 「日」や「時間」が含まれる場合は除外（1時間以上残っているもの）
-      if "日" in parent_text or "時間" in parent_text:
+      # 「日」が含まれるものは除外（1日以上の残り時間）
+      if "日" in parent_text:
         continue
 
-      # 残り「分」を取得し、10分以上60分未満（10〜59分）かチェック
-      min_match = re.search(r"(\d+)分", parent_text)
-      if min_match:
-        minutes_left = int(min_match.group(1))
+      minutes_left = None
 
-        # ★ 残り10分〜59分前のみを抽出対象にする（10分未満・60分以上は除外）
-        if 10 <= minutes_left < 60:
+      # 残り時間表現のパース
+      # パターン1: 「X時間Y分」または「X時間」
+      hour_match = re.search(r"(\d+)時間(?:(\d+)分)?", parent_text)
+      # パターン2: 「Y分」のみ
+      min_match = re.search(r"^(\d+)分|[\s](\d+)分", parent_text)
+
+      if hour_match:
+        hours = int(hour_match.group(1))
+        mins = int(hour_match.group(2)) if hour_match.group(2) else 0
+        minutes_left = hours * 60 + mins
+      elif min_match:
+        minutes_left = int(
+            min_match.group(1) if min_match.group(1) else min_match.group(2)
+        )
+
+      # ★ 残り3時間未満（180分未満）を対象にする
+      if minutes_left is not None and minutes_left < 180:
+        if minutes_left >= 60:
+          time_str = f"{minutes_left // 60}時間{minutes_left % 60}分"
+        else:
           time_str = f"{minutes_left}分"
 
-          title = a.get_text().strip()
-          if not title or len(title) < 5:
-            title = parent_text[:35] if parent_text else "タイトル不明"
+        title = a.get_text().strip()
+        if not title or len(title) < 5:
+          title = parent_text[:35] if parent_text else "タイトル不明"
 
-          if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
-            print(
-                f"🚫 除外対象ブランドのためスキップ: {title[:20]}...",
-                flush=True,
-            )
-            continue
+        if any(keyword in title for keyword in EXCLUDE_KEYWORDS):
+          print(
+              f"🚫 除外対象ブランドのためスキップ: {title[:20]}...",
+              flush=True,
+          )
+          continue
 
-          if not any(x["item_id"] == item_id for x in urgent_items):
-            urgent_items.append({
-                "item_id": item_id,
-                "title": title,
-                "url": clean_url,
-                "time": time_str,
-            })
+        if not any(x["item_id"] == item_id for x in urgent_items):
+          urgent_items.append({
+              "item_id": item_id,
+              "title": title,
+              "url": clean_url,
+              "time": time_str,
+          })
 
   return urgent_items
 
@@ -243,7 +266,7 @@ def fetch_auction_details(page, url):
 # ==================================================
 def analyze_watch(title, description, images):
   if not client:
-    print("❌ Gemini APIキーが読み込めていません")
+    print("❌ Gemini APIキーが読み込めていません", flush=True)
     return None
 
   prompt = f"""
@@ -297,15 +320,19 @@ def analyze_watch(title, description, images):
   except APIError as e:
     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
       print(
-          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。"
+          "⚠️ 【Quota上限検知】Gemini APIの制限枠に達しました。",
+          flush=True,
       )
-      print("   以降の解析を中断し、スクリプトを安全に終了します。")
+      print(
+          "   以降の解析を中断し、スクリプトを安全に終了します。",
+          flush=True,
+      )
       return "QUOTA_EXCEEDED"
     else:
-      print(f"❌ Gemini APIエラー: {e}")
+      print(f"❌ Gemini APIエラー: {e}", flush=True)
       return None
   except Exception as e:
-    print(f"❌ Gemini解析例外: {e}")
+    print(f"❌ Gemini解析例外: {e}", flush=True)
     return None
 
 
@@ -314,8 +341,7 @@ def analyze_watch(title, description, images):
 # ==================================================
 def main():
   print(
-      "🚀 ヤフオク ソーラー時計仕入れリサーチ（Playwright + Gemini 3.8"
-      " Flash）を開始します...",
+      "🚀 ヤフオク ソーラー時計仕入れリサーチ（残り3時間未満対応版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
@@ -350,19 +376,18 @@ def main():
       print(f"🏪 巡回開始: 【 {store_name} 】", flush=True)
       print("========================================", flush=True)
 
-      # 該当する全件を取得（件数による切り捨て上限なし）
       target_items = get_urgent_auction_urls(
           page, store_name, target_search_url, seen_items
       )
 
       print(
-          f"⏰ 残り10分〜59分前の対象商品【 {len(target_items)} 件 】を全件チェックします。\n",
+          f"⏰ 残り3時間未満の対象商品【 {len(target_items)} 件 】を全件チェックします。\n",
           flush=True,
       )
 
       if not target_items:
         print(
-            f"【{store_name}】に該当する未チェック商品（残り10分〜59分前）は見つかりませんでした。",
+            f"【{store_name}】に該当する未チェック商品（残り3時間未満）は見つかりませんでした。",
             flush=True,
         )
         continue
@@ -388,7 +413,7 @@ def main():
           g_result = analyze_watch(title, description, images)
 
           if g_result == "QUOTA_EXCEEDED":
-            print("⛔ API制限に達したため処理を安全に停止します。")
+            print("⛔ API制限に達したため処理を安全に停止します。", flush=True)
             break
 
           if g_result:
@@ -403,16 +428,20 @@ def main():
             ):
               print(
                   f"  ⚠️ 赤字判定補正: 現在価格({current_price}円) >="
-                  f" 推奨上限額({max_bid_num}円)"
+                  f" 推奨上限額({max_bid_num}円)",
+                  flush=True,
               )
               score = "C（不可）"
 
             print(
                 f"  └ 最終判定: {score} | 通常上限:"
                 f" {g_result.get('max_bid_price_target')}円 | 防衛線:"
-                f" {g_result.get('max_bid_price_break_even')}円"
+                f" {g_result.get('max_bid_price_break_even')}円",
+                flush=True,
             )
-            print(f"  └ 添削理由: {g_result.get('reasoning')}")
+            print(
+                f"  └ 添削理由: {g_result.get('reasoning')}", flush=True
+            )
 
             if "A" in score or "B" in score:
               send_discord_notify(store_name, item, g_result, current_price)
