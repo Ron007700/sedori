@@ -115,7 +115,7 @@ def send_discord_notify(store_name, item, result, current_price=0):
 
 
 # ==================================================
-# 3. リスト取得（残り時間の短い順・上位20件限定リサーチ）
+# 3. リスト取得（ブラウザ操作で「残り時間の短い順」へ切替 & 上位20件取得）
 # ==================================================
 def get_urgent_auction_urls(page, store_name, search_url, seen_items):
   print(
@@ -127,6 +127,23 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
   except Exception:
     page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
 
+  # ★ ブラウザ上でドロップダウン操作を行い「残り時間の短い順」に変更する処理[span_6](start_span)[span_6](end_span)
+  try:
+    # select要素が存在する場合の選択
+    select_element = page.query_selector(
+        "select[name='select'], select.Select__input, select"
+    )
+    if select_element:
+      # 「残り時間の短い順」の値（cb または end や インデックス指定）を選択
+      page.select_option(
+          "select", label="残り時間の短い順"
+      )  # ラベルで直接選択
+      page.wait_for_load_state("networkidle", timeout=10000)
+      time.sleep(2)
+      print("  🔄 並び順を『残り時間の短い順』に変更しました。", flush=True)
+  except Exception as e:
+    print(f"  ⚠️ プルダウン切替時の試行ログ: {e}", flush=True)
+
   # 画面をスクロールして上位商品を読み込ませる
   for i in range(1, 3):
     page.evaluate(f"window.scrollTo(0, {i * 800});")
@@ -135,7 +152,7 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
   soup = BeautifulSoup(page.content(), "html.parser")
   raw_items = []
 
-  # 1. まずページ内のオークション商品を上から順番に抽出
+  # 1. ページ内のオークション商品を上から順番に抽出
   for a in soup.find_all("a", href=True):
     href = a["href"]
     if "/auction/" in href:
@@ -161,11 +178,10 @@ def get_urgent_auction_urls(page, store_name, search_url, seen_items):
             "parent_text": parent_text,
         })
 
-  # ★ 上位20件のみに制限する
+  # ★ 上位20件のみに制限
   raw_items = raw_items[:20]
   print(
-      f"📦 【{store_name}】の残り時間順 上位{len(raw_items)}件をスキャン中...",
-      flush=True,
+      f"📦 【{store_name}】の上位{len(raw_items)}件をスキャン中...", flush=True
   )
 
   urgent_items = []
@@ -362,7 +378,8 @@ def analyze_watch(title, description, images):
 # ==================================================
 def main():
   print(
-      "🚀 ヤフオク ソーラー時計仕入れリサーチ（残り時間順・上位20件厳選版）を開始します...",
+      "🚀 ヤフオク"
+      " ソーラー時計仕入れリサーチ（ブラウザソート切替＆上位20件厳選版）を開始します...",
       flush=True,
   )
   seen_items = load_seen_items()
@@ -390,8 +407,8 @@ def main():
       store_name = store["name"]
       seller_id = store["id"]
 
-      # 残り時間の短い順（select=05&s1=cb&o1=a）に固定
-      target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&select=05&is_auction=1&s1=cb&o1=a"
+      # 基本の検索URL（ストア指定・キーワード指定）
+      target_search_url = f"https://auctions.yahoo.co.jp/seller/{seller_id}?p={SEARCH_KEYWORD}&category_id=23140&is_auction=1"
 
       print("\n========================================", flush=True)
       print(f"🏪 巡回開始: 【 {store_name} 】", flush=True)
@@ -402,13 +419,14 @@ def main():
       )
 
       print(
-          f"⏰ 上位20件中、残り3時間未満の対象商品【 {len(target_items)} 件 】をチェックします。\n",
+          f"⏰ 残り時間の短い順"
+          f" 上位20件中、残り3時間未満の対象商品【 {len(target_items)} 件 】をチェックします。\n",
           flush=True,
       )
 
       if not target_items:
         print(
-            f"【{store_name}】上位20件に該当する未チェック対象商品（残り3時間未満）は見つかりませんでした。",
+            f"【{store_name}】該当する未チェック対象商品（残り3時間未満）は見つかりませんでした。",
             flush=True,
         )
         continue
