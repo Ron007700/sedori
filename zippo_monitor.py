@@ -24,10 +24,10 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 # 検索上限価格（3,000円以下）
 MAX_PRICE_LIMIT = 3000
 
-# ★ 件数上限を30件に変更
+# ★ 件数上限（上位30件）
 MAX_AUCTION_ITEMS = 30
 
-# ★ オークション専用URL（aucmaxpriceへの修正と &n=50 で30件分を確実に取得）
+# ★ オークション専用URL（aucmaxprice適用 & n=50で上位件数を確実に確保）
 URL_AUCTION = f"https://auctions.yahoo.co.jp/search/search?p=ZIPPO&aucmaxprice={MAX_PRICE_LIMIT}&is_auction=1&s1=end&o1=a&n=50"
 
 SEEN_FILE = "seen_zippo.json"
@@ -104,7 +104,7 @@ def save_seen_items(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
       json.dump(list(seen), f, ensure_ascii=False, indent=2)
   except Exception as e:
-    print(f"⚠️️ 既読ファイルの保存エラー: {e}")
+    print(f"⚠️ 既読ファイルの保存エラー: {e}")
 
 
 def send_discord_notification(item, g_result, seller_name):
@@ -212,7 +212,7 @@ def analyze_zippo_with_gemini(title, description, images, price):
   except APIError as e:
     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
       print(
-          "⚠️ 【Quota上限検知】Gemini APIの無料枠(1日あたりの上限)に達しました。"
+          "⚠️️ 【Quota上限検知】Gemini APIの無料枠(1日あたりの上限)に達しました。"
       )
       print("   以降の解析を中断し、スクリプトを安全に終了します。")
       return "QUOTA_EXCEEDED"
@@ -351,16 +351,30 @@ def process_auction_list(
     if not matched_keyword:
       continue
 
-    # 残り時間チェック（1時間以内のみ）
-    if "日" in time_text or "時間" in time_text:
+    # ★ 残り時間チェック（10分〜3時間以内）
+    if "日" in time_text:
       continue
 
-    min_match = re.search(r"(\d+)\s*分", time_text)
-    if not min_match:
+    minutes_left = None
+    hour_match = re.search(r"(\d+)時間(?:(\d+)分)?", time_text)
+    min_match = re.search(r"^(\d+)分|[\s](\d+)分|(\d+)分", time_text)
+
+    if hour_match:
+      hours = int(hour_match.group(1))
+      mins = int(hour_match.group(2)) if hour_match.group(2) else 0
+      minutes_left = hours * 60 + mins
+    elif min_match:
+      mins_val = next(g for g in min_match.groups() if g is not None)
+      minutes_left = int(mins_val)
+
+    # 10分未満、または 180分（3時間）以上の商品はスキップ
+    if minutes_left is None or not (10 <= minutes_left < 180):
       continue
 
-    minutes_left = int(min_match.group(1))
-    time_left_str = f"{minutes_left}分"
+    if minutes_left >= 60:
+      time_left_str = f"{minutes_left // 60}時間{minutes_left % 60}分"
+    else:
+      time_left_str = f"{minutes_left}分"
 
     if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
       continue
@@ -440,7 +454,8 @@ def process_auction_list(
 # --------------------------------------------------
 def main():
   print(
-      f"🚀 ヤフオク ZIPPO仕入れリサーチ（オークション限定{MAX_AUCTION_ITEMS}件）を開始します..."
+      f"🚀 ヤフオク ZIPPO仕入れリサーチ（オークション限定{MAX_AUCTION_ITEMS}件 /"
+      " 10分〜3時間版）を開始します..."
   )
   seen_items = load_seen_items()
 
