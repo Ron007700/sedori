@@ -21,17 +21,17 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 # APIキー未設定時の安全化
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
-# 検索条件
-MAX_PRICE_LIMIT = 10000  # 上限価格（10,000円以下）
-MAX_AUCTION_ITEMS = 50   # 1回の巡回でチェックする上限件数
+# 検索条件（手動検索と一致）
+MIN_PRICE_LIMIT = 1000   # 下限価格（1,000円）
+MAX_PRICE_LIMIT = 10000  # 上限価格（10,000円）
+MAX_AUCTION_ITEMS = 30   # 1回の巡回でチェックする上限件数
 
-# ★ ヤフオク検索URL（「ファッション小物」カテゴリ：2084005327 で「スレ」を残り時間順検索）
-URL_AUCTION = (
-    "https://auctions.yahoo.co.jp/search/search?"
-    "p=%E3%82%B9%E3%83%AC"
-    "&auccat=2084005327"
-    "&s1=end&o1=a&n=50"
-)
+# ヤフオク検索キーワード（巡回リスト）
+SEARCH_QUERIES = [
+    "スレ",
+    "財布 スレ",
+    "レザー スレ",
+]
 
 SEEN_FILE = "seen_leather.json"
 
@@ -42,6 +42,7 @@ TARGET_KEYWORDS = [
     "擦れ",
     "色落ち",
     "キズ",
+    "傷",
     "汚れ",
     "ジャンク",
 ]
@@ -219,7 +220,6 @@ def fetch_detail_page(page, url):
             if clean_url not in img_urls and not clean_url.endswith(".gif"):
                 img_urls.append(clean_url)
 
-    # 画像は最大8枚までに制限
     img_urls = img_urls[:8]
 
     headers = {
@@ -244,14 +244,26 @@ def fetch_detail_page(page, url):
 # --------------------------------------------------
 # 5. 商品処理のメイン関数
 # --------------------------------------------------
-def process_auction_list(page, target_url, max_limit, sale_type_label, seen_items):
-    print(f"\n🔍 【{sale_type_label}】検索URLへアクセス中: {target_url}")
+def process_auction_list(page, query, max_limit, seen_items):
+    # 手動検索と全く同じURLパラメータを設定
+    # auccat=23140 (ファッション小物), min=1000, max=10000, s1=end&o1=a (残り時間の短い順)
+    target_url = (
+        f"https://auctions.yahoo.co.jp/search/search?"
+        f"p={requests.utils.quote(query)}"
+        f"&auccat=23140"
+        f"&min={MIN_PRICE_LIMIT}"
+        f"&max={MAX_PRICE_LIMIT}"
+        f"&s1=end&o1=a"
+        f"&n=50"
+    )
+
+    print(f"\n🔍 【検索ワード: {query}】アクセス中: {target_url}")
 
     try:
         page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
         print(f"❌ ページ移動エラー: {e}")
-        return
+        return True
 
     time.sleep(2)
 
@@ -261,15 +273,15 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
 
     if not items:
         print("⚠️ 商品要素が見つかりませんでした。")
-        return
+        return True
 
-    print(f"📦 検出件数: {len(items)}件 (最大{max_limit}件精査開始)")
+    print(f"📦 検出件数: {len(items)}件")
 
     processed_count = 0
 
     for idx, item in enumerate(items, 1):
         if processed_count >= max_limit:
-            print(f"⏱ 上限{max_limit}件に達したため完了。")
+            print(f"⏱ 上限{max_limit}件に達したため本キーワードの処理完了。")
             break
 
         title_tag = item.select_one(".Product__titleLink") or item.select_one("a")
@@ -286,9 +298,6 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
             continue
         price = int(price_digits)
 
-        if price > MAX_PRICE_LIMIT:
-            continue
-
         time_tag = item.select_one(".Product__time") or item.select_one("[class*='time']")
         time_text = (
             time_tag.get_text(strip=True)
@@ -301,11 +310,9 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
             match = re.search(r"/auction/([a-zA-Z0-9]+)", url)
             item_id = match.group(1) if match else url
 
-        # ★ 重複チェック（保存済みIDならスキップ）
         if item_id in seen_items:
             continue
 
-        # キーワードチェック
         matched_keyword = None
         for kw in TARGET_KEYWORDS:
             if kw.lower() in title.lower():
@@ -315,7 +322,6 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
         if not matched_keyword:
             continue
 
-        # ★ 残り時間チェック（10分〜180分＝3時間以内に限定）
         if "日" in time_text:
             continue
 
@@ -331,7 +337,6 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
             mins_val = next(g for g in min_match.groups() if g is not None)
             minutes_left = int(mins_val)
 
-        # 10分未満、または 180分（3時間）以上の商品はスキップ
         if minutes_left is None or not (10 <= minutes_left < 180):
             continue
 
@@ -340,7 +345,6 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
         else:
             time_left_str = f"{minutes_left}分"
 
-        # タイトルNGワードチェック
         if any(ng.lower() in title.lower() for ng in NG_KEYWORDS):
             continue
 
@@ -354,7 +358,6 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
         try:
             seller_name, description, images = fetch_detail_page(page, url)
 
-            # 本文NGワードチェック
             text_to_check = f"{title} {description}".lower()
             found_ng = [ng for ng in NG_KEYWORDS if ng.lower() in text_to_check]
             if found_ng:
@@ -366,10 +369,9 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
             print("🤖 Geminiで黒革・リペア適性AI査定中...")
             g_result = analyze_leather_with_gemini(title, description, images, price)
 
-            # Quota上限に達した場合は処理を安全中断
             if g_result == "QUOTA_EXCEEDED":
                 print("⛔ 制限のため処理をここで安全に停止します。")
-                break
+                return False
 
             if g_result:
                 score = g_result.get("condition_score", "")
@@ -382,7 +384,7 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
 
                 if price >= max_target and max_target > 0:
                     print(
-                        f"  ⚠️ 赤字判定補正: 現在価格({price}円) >= 推奨上限額({max_target}円)"
+                        f"  ⚠ 赤字判定補正: 現在価格({price}円) >= 推奨上限額({max_target}円)"
                     )
                     score = "C（不可）"
 
@@ -397,7 +399,7 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
                         "id": item_id,
                         "title": title,
                         "price": price,
-                        "sale_type": sale_type_label,
+                        "sale_type": "ヤフオク",
                         "matched_keyword": matched_keyword,
                         "time_left": time_left_str,
                         "url": url,
@@ -414,12 +416,14 @@ def process_auction_list(page, target_url, max_limit, sale_type_label, seen_item
 
         time.sleep(1)
 
+    return True
+
 
 # --------------------------------------------------
 # 6. メイン実行処理
 # --------------------------------------------------
 def main():
-    print("🚀 ヤフオク 黒革小物リペア仕入れリサーチ（残り10分〜3時間版）を開始します...")
+    print("🚀 ヤフオク 黒革小物リペア仕入れリサーチを開始します...")
     seen_items = load_seen_items()
 
     with sync_playwright() as p:
@@ -440,13 +444,12 @@ def main():
         )
         page = context.new_page()
 
-        process_auction_list(
-            page,
-            URL_AUCTION,
-            MAX_AUCTION_ITEMS,
-            "ヤフオク(残り3時間以内)",
-            seen_items,
-        )
+        for query in SEARCH_QUERIES:
+            continue_flag = process_auction_list(
+                page, query, MAX_AUCTION_ITEMS, seen_items
+            )
+            if not continue_flag:
+                break
 
         browser.close()
 
