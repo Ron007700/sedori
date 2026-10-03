@@ -246,16 +246,16 @@ def fetch_detail_page(page, url):
 # 5. 商品処理のメイン関数
 # --------------------------------------------------
 def process_auction_list(page, query, max_limit, seen_items):
-    # auccat=2084200083 : ファッション（服飾小物等）
-    # s1=cbids&o1=a : 現在価格が安い順
-    # min=1000, max=10000 : 価格帯1,000円〜10,000円
+    # auccat=2084005327 : ファッション小物（アプリで指定されていた正確なカテゴリ）
+    # s1=end&o1=a : 残り時間の短い順
+    # min=1000, max=10000 : 1,000円〜10,000円
     target_url = (
         f"https://auctions.yahoo.co.jp/search/search?"
         f"p={requests.utils.quote(query)}"
-        f"&auccat=2084200083"
+        f"&auccat=2084005327"
         f"&min={MIN_PRICE_LIMIT}"
         f"&max={MAX_PRICE_LIMIT}"
-        f"&s1=cbids&o1=a"
+        f"&s1=end&o1=a"
         f"&n=50"
     )
 
