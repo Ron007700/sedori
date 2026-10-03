@@ -26,12 +26,9 @@ MIN_PRICE_LIMIT = 1000   # 下限価格（1,000円）
 MAX_PRICE_LIMIT = 10000  # 上限価格（10,000円）
 MAX_AUCTION_ITEMS = 30   # 1回の巡回でチェックする上限件数
 
-# ヤフオク検索キーワード（巡回リスト）
+# ヤフオク検索キーワード（「スレ」のみに設定）
 SEARCH_QUERIES = [
-    "財布 スレ",
-    "キーケース スレ",
-    "レザー スレ",
-    "コインケース スレ",
+    "スレ",
 ]
 
 SEEN_FILE = "seen_leather.json"
@@ -246,13 +243,13 @@ def fetch_detail_page(page, url):
 # 5. 商品処理のメイン関数
 # --------------------------------------------------
 def process_auction_list(page, query, max_limit, seen_items):
-    # auccat=2084005327 : ファッション小物（アプリで指定されていた正確なカテゴリ）
+    # auccat=23004 : ファッション小物
     # s1=end&o1=a : 残り時間の短い順
     # min=1000, max=10000 : 1,000円〜10,000円
     target_url = (
         f"https://auctions.yahoo.co.jp/search/search?"
         f"p={requests.utils.quote(query)}"
-        f"&auccat=2084005327"
+        f"&auccat=23004"
         f"&min={MIN_PRICE_LIMIT}"
         f"&max={MAX_PRICE_LIMIT}"
         f"&s1=end&o1=a"
