@@ -21,16 +21,17 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 # APIキー未設定時の安全化
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
-# 検索条件（手動検索と一致）
+# 検索条件
 MIN_PRICE_LIMIT = 1000   # 下限価格（1,000円）
 MAX_PRICE_LIMIT = 10000  # 上限価格（10,000円）
 MAX_AUCTION_ITEMS = 30   # 1回の巡回でチェックする上限件数
 
 # ヤフオク検索キーワード（巡回リスト）
 SEARCH_QUERIES = [
-    "スレ",
     "財布 スレ",
+    "キーケース スレ",
     "レザー スレ",
+    "コインケース スレ",
 ]
 
 SEEN_FILE = "seen_leather.json"
@@ -245,15 +246,16 @@ def fetch_detail_page(page, url):
 # 5. 商品処理のメイン関数
 # --------------------------------------------------
 def process_auction_list(page, query, max_limit, seen_items):
-    # 手動検索と全く同じURLパラメータを設定
-    # auccat=23140 (ファッション小物), min=1000, max=10000, s1=end&o1=a (残り時間の短い順)
+    # auccat=2084200083 : ファッション（服飾小物等）
+    # s1=cbids&o1=a : 現在価格が安い順
+    # min=1000, max=10000 : 価格帯1,000円〜10,000円
     target_url = (
         f"https://auctions.yahoo.co.jp/search/search?"
         f"p={requests.utils.quote(query)}"
-        f"&auccat=23140"
+        f"&auccat=2084200083"
         f"&min={MIN_PRICE_LIMIT}"
         f"&max={MAX_PRICE_LIMIT}"
-        f"&s1=end&o1=a"
+        f"&s1=cbids&o1=a"
         f"&n=50"
     )
 
