@@ -25,11 +25,11 @@ client = genai.Client(api_key=API_KEY) if API_KEY else None
 MAX_PRICE_LIMIT = 10000  # 上限価格（10,000円以下）
 MAX_AUCTION_ITEMS = 50   # 1回の巡回でチェックする上限件数
 
-# ★ ヤフオク検索URL（ファッション小物カテゴリ、残り時間が短い順）
+# ★ ヤフオク検索URL（「ファッション小物」カテゴリ：2084005327 で「スレ」を残り時間順検索）
 URL_AUCTION = (
     "https://auctions.yahoo.co.jp/search/search?"
     "p=%E3%82%B9%E3%83%AC"
-    "&auccat=2084200084"
+    "&auccat=2084005327"
     "&s1=end&o1=a&n=50"
 )
 
